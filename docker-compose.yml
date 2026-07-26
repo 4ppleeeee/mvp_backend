@@ -1,0 +1,29 @@
+name: tripguard_mvp
+
+services:
+  backend:
+    build:
+      context: .
+    container_name: tripguard-mvp-backend
+    restart: unless-stopped
+    environment:
+      TRIPGUARD_DATABASE_URL: sqlite:////data/tripguard.db
+      TRIPGUARD_UPLOADS_DIR: /uploads
+      TRIPGUARD_PUBLIC_BASE_URL: ${TRIPGUARD_PUBLIC_BASE_URL:-http://127.0.0.1:18080}
+      TRIPGUARD_LLM_BASE_URL: http://host.docker.internal:11434/v1
+      TRIPGUARD_LLM_MODEL: ${TRIPGUARD_LLM_MODEL:-gemma4:latest}
+      TRIPGUARD_REQUEST_TIMEOUT_SECONDS: ${TRIPGUARD_REQUEST_TIMEOUT_SECONDS:-120}
+    volumes:
+      - ./data:/data
+      - ./uploads:/uploads
+    ports:
+      - "${TRIPGUARD_BACKEND_PORT:-18080}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - tripguard_mvp_net
+
+networks:
+  tripguard_mvp_net:
+    name: tripguard_mvp_net
+    driver: bridge

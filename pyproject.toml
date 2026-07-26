@@ -1,0 +1,26 @@
+[project]
+name = "tripguard-mvp-backend"
+version = "0.1.0"
+description = "MVP backend for the TripGuard travel knowledge base."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.116.0",
+  "httpx>=0.28.0",
+  "pydantic-settings>=2.10.0",
+  "python-multipart>=0.0.20",
+  "sqlmodel>=0.0.24",
+  "uvicorn>=0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["data*", "uploads*", "tests*"]
