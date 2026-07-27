@@ -54,6 +54,13 @@ class CollectSourceRequest(BaseModel):
     cover_image_url: str | None = None
 
 
+class AnalyzeImageRequest(BaseModel):
+    input_type: Literal["image"] = "image"
+    image_base64: str = Field(min_length=1)
+    title_hint: str | None = None
+    source_platform: str | None = None
+
+
 class ClientConfigResponse(BaseModel):
     api_base_url: str
     service: str
@@ -64,6 +71,8 @@ class AnalyzeSourceResponse(BaseModel):
     is_travel_related: bool
     reason: str | None = None
     confidence: float
+    title: str | None = None
+    body_text: str | None = None
     destination: str
     category: str
     location_name: str | None

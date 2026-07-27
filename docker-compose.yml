@@ -10,8 +10,9 @@ services:
       TRIPGUARD_DATABASE_URL: sqlite:////data/tripguard.db
       TRIPGUARD_UPLOADS_DIR: /uploads
       TRIPGUARD_PUBLIC_BASE_URL: ${TRIPGUARD_PUBLIC_BASE_URL:-http://127.0.0.1:18080}
-      TRIPGUARD_LLM_BASE_URL: http://host.docker.internal:11434/v1
+      TRIPGUARD_LLM_BASE_URL: http://host.docker.internal:11434
       TRIPGUARD_LLM_MODEL: ${TRIPGUARD_LLM_MODEL:-gemma4:latest}
+      TRIPGUARD_LLM_MAX_TOKENS: ${TRIPGUARD_LLM_MAX_TOKENS:-1200}
       TRIPGUARD_REQUEST_TIMEOUT_SECONDS: ${TRIPGUARD_REQUEST_TIMEOUT_SECONDS:-120}
     volumes:
       - ./data:/data

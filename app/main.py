@@ -6,11 +6,12 @@ from sqlmodel import Session, select
 
 from app.config import Settings
 from app.db import create_db_engine, init_db
-from app.llm import LmStudioLlmClient, normalize_analysis, normalize_query
+from app.llm import OllamaLlmClient, normalize_analysis, normalize_query
 from app.models import TravelSource
 from app.repository import search_sources, to_card, to_used_source
 from app.schemas import (
     AnalyzeSourceResponse,
+    AnalyzeImageRequest,
     ChatRecommendRequest,
     ChatRecommendResponse,
     ClientConfigResponse,
@@ -24,7 +25,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
     app_settings = settings or Settings()
     Path(app_settings.uploads_dir).mkdir(parents=True, exist_ok=True)
     engine = create_db_engine(app_settings)
-    client = llm_client or LmStudioLlmClient(app_settings)
+    client = llm_client or OllamaLlmClient(app_settings)
     init_db(engine)
 
     app = FastAPI(title="TripGuard MVP Backend", version="0.1.0")
@@ -67,6 +68,8 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             is_travel_related=analysis.is_travel_related,
             reason=analysis.reason,
             confidence=analysis.confidence,
+            title=analysis.title,
+            body_text=analysis.body_text,
             destination=analysis.destination,
             category=analysis.category,
             location_name=analysis.location_name,
@@ -77,6 +80,60 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
     @app.post("/sources/analyze", response_model=AnalyzeSourceResponse)
     async def analyze_source(request: CollectSourceRequest) -> AnalyzeSourceResponse:
         return await analyze_request(request)
+
+    @app.post("/sources/analyze-image", response_model=AnalyzeSourceResponse)
+    async def analyze_image(request: AnalyzeImageRequest) -> AnalyzeSourceResponse:
+        return await analyze_image_request(request)
+
+    async def analyze_image_request(request: AnalyzeImageRequest) -> AnalyzeSourceResponse:
+        try:
+            analysis = await client.analyze_image(
+                image_base64=request.image_base64,
+                title_hint=request.title_hint,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="llm unavailable") from exc
+        analysis = normalize_analysis(analysis)
+        return AnalyzeSourceResponse(
+            is_travel_related=analysis.is_travel_related,
+            reason=analysis.reason,
+            confidence=analysis.confidence,
+            title=analysis.title,
+            body_text=analysis.body_text,
+            destination=analysis.destination,
+            category=analysis.category,
+            location_name=analysis.location_name,
+            normalized_tags=analysis.normalized_tags,
+            raw_tags=analysis.raw_tags,
+        )
+
+    @app.post("/sources/collect-image", response_model=CollectSourceResponse, status_code=status.HTTP_201_CREATED)
+    async def collect_image_source(
+        request: AnalyzeImageRequest,
+        response: Response,
+        session: Session = Depends(get_session),
+    ) -> CollectSourceResponse:
+        analysis = await analyze_image_request(request)
+        if not analysis.is_travel_related:
+            response.status_code = status.HTTP_200_OK
+            return CollectSourceResponse(saved=False, reason=analysis.reason or "not travel related")
+
+        source = TravelSource(
+            title=analysis.title or request.title_hint or "长图旅行资料",
+            body_text=analysis.body_text or analysis.title or request.title_hint or "长图旅行资料",
+            original_url=None,
+            source_platform=request.source_platform or "image",
+            cover_image_url=None,
+            destination=analysis.destination,
+            category=analysis.category,
+            location_name=analysis.location_name,
+            normalized_tags=analysis.normalized_tags,
+            raw_tags=analysis.raw_tags,
+        )
+        session.add(source)
+        session.commit()
+        session.refresh(source)
+        return CollectSourceResponse(saved=True, source=to_card(source))
 
     @app.post("/sources/collect", response_model=CollectSourceResponse, status_code=status.HTTP_201_CREATED)
     async def collect_source(

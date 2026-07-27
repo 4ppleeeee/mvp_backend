@@ -4,7 +4,7 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.llm import LmStudioLlmClient, SourceAnalysis, TravelQuery
+from app.llm import OllamaLlmClient, SourceAnalysis, TravelQuery, normalize_analysis
 from app.main import create_app
 
 
@@ -42,6 +42,20 @@ class FakeLlmClient:
             "answer": "第 1 天可以安排表参道下午茶，再去附近街区拍照。",
             "used_source_ids": [item["source_id"] for item in contexts[:2]],
         }
+
+    async def analyze_image(self, *, image_base64: str, title_hint: str | None = None) -> SourceAnalysis:
+        return SourceAnalysis(
+            is_travel_related=True,
+            reason="travel image note",
+            confidence=0.9,
+            title="上海武康路咖啡路线",
+            body_text="武康路、安福路、咖啡和甜品 citywalk 路线。",
+            destination="上海",
+            category="eat",
+            location_name="武康路",
+            normalized_tags=["咖啡", "甜品", "拍照好看"],
+            raw_tags=["citywalk"],
+        )
 
 
 class BrokenLlmClient:
@@ -120,6 +134,84 @@ def test_analyze_source_returns_card_metadata_without_saving(tmp_path: Path) -> 
     assert client.get("/sources").json()["items"] == []
 
 
+def test_analyze_image_returns_ocr_card_metadata_without_saving(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/sources/analyze-image",
+        json={
+            "input_type": "image",
+            "image_base64": "ZmFrZS1pbWFnZQ==",
+            "title_hint": "长图分享",
+            "source_platform": "image",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["is_travel_related"] is True
+    assert payload["title"] == "上海武康路咖啡路线"
+    assert payload["body_text"] == "武康路、安福路、咖啡和甜品 citywalk 路线。"
+    assert payload["destination"] == "上海"
+    assert payload["category"] == "eat"
+    assert payload["location_name"] == "武康路"
+    assert payload["normalized_tags"] == ["咖啡", "甜品", "拍照好看"]
+    assert payload["raw_tags"] == ["citywalk"]
+    assert client.get("/sources").json()["items"] == []
+
+
+def test_source_analysis_accepts_string_tags_from_model() -> None:
+    analysis = SourceAnalysis.model_validate(
+        {
+            "is_travel_related": True,
+            "confidence": 1.0,
+            "destination": "东京",
+            "category": "eat",
+            "normalized_tags": "拍照好看, 咖啡, 排队",
+            "raw_tags": "下午茶, 舒芙蕾松饼, 表参道",
+        }
+    )
+
+    assert analysis.normalized_tags == ["拍照好看", "咖啡", "排队"]
+    assert analysis.raw_tags == ["下午茶", "舒芙蕾松饼", "表参道"]
+
+
+def test_normalize_analysis_rejects_travel_without_destination_or_category() -> None:
+    analysis = normalize_analysis(
+        SourceAnalysis(
+            is_travel_related=True,
+            reason="looks like travel but no destination",
+            confidence=0.8,
+            destination="未知",
+            category="unknown",
+            normalized_tags=["拍照好看"],
+        )
+    )
+
+    assert analysis.is_travel_related is False
+    assert analysis.reason == "missing destination or category"
+
+
+def test_normalize_analysis_maps_unknown_scenic_category_to_play() -> None:
+    analysis = normalize_analysis(
+        SourceAnalysis(
+            is_travel_related=True,
+            reason="park travel note",
+            confidence=0.98,
+            destination="北京",
+            category="unknown",
+            location_name="北海公园",
+            normalized_tags=["公园", "拍照好看", "情侣", "朋友"],
+            raw_tags=["花海", "园林游玩"],
+        )
+    )
+
+    assert analysis.is_travel_related is True
+    assert analysis.destination == "北京"
+    assert analysis.category == "play"
+    assert analysis.normalized_tags == ["公园", "拍照好看", "情侣", "朋友"]
+
+
 def test_collect_travel_source_creates_card_without_exposing_body_text(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
@@ -147,6 +239,40 @@ def test_collect_travel_source_creates_card_without_exposing_body_text(tmp_path:
     list_response = client.get("/sources")
     assert list_response.status_code == 200
     assert len(list_response.json()["items"]) == 1
+
+
+def test_collect_image_source_creates_backend_card(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/sources/collect-image",
+        json={
+            "input_type": "image",
+            "image_base64": "ZmFrZS1pbWFnZQ==",
+            "title_hint": "长图分享",
+            "source_platform": "image",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["saved"] is True
+    assert payload["source"]["title"] == "上海武康路咖啡路线"
+    assert payload["source"]["original_url"] is None
+    assert payload["source"]["source_platform"] == "image"
+    assert payload["source"]["destination"] == "上海"
+    assert payload["source"]["category"] == "eat"
+    assert payload["source"]["location_name"] == "武康路"
+    assert payload["source"]["normalized_tags"] == ["咖啡", "甜品", "拍照好看"]
+    assert payload["source"]["raw_tags"] == ["citywalk"]
+
+    list_response = client.get("/sources")
+    assert list_response.status_code == 200
+    assert len(list_response.json()["items"]) == 1
+    source_id = payload["source"]["source_id"]
+    detail_response = client.get(f"/sources/{source_id}")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["body_text"] == "武康路、安福路、咖啡和甜品 citywalk 路线。"
 
 
 def test_collect_non_travel_source_does_not_save(tmp_path: Path) -> None:
@@ -211,7 +337,7 @@ def test_recommend_uses_saved_sources_as_trusted_citations(tmp_path: Path) -> No
     assert payload["used_sources"][0]["source_id"]
 
 
-def test_lm_studio_client_bounds_json_generation(monkeypatch, tmp_path: Path) -> None:
+def test_ollama_client_bounds_json_generation(monkeypatch, tmp_path: Path) -> None:
     captured_payloads: list[dict] = []
 
     class FakeResponse:
@@ -219,7 +345,7 @@ def test_lm_studio_client_bounds_json_generation(monkeypatch, tmp_path: Path) ->
             return None
 
         def json(self) -> dict:
-            return {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+            return {"message": {"content": "{\"ok\": true}"}}
 
     class FakeAsyncClient:
         def __init__(self, *, timeout: float) -> None:
@@ -243,15 +369,19 @@ def test_lm_studio_client_bounds_json_generation(monkeypatch, tmp_path: Path) ->
         llm_model="gemma4:latest",
     )
 
-    asyncio.run(LmStudioLlmClient(settings)._chat_json("输出 JSON"))
+    asyncio.run(OllamaLlmClient(settings)._chat_json("输出 JSON"))
 
     payload = captured_payloads[0]
-    assert payload["max_tokens"] == 220
-    assert payload["temperature"] == 0.1
+    assert payload["think"] is False
     assert payload["stream"] is False
+    assert payload["format"] == "json"
+    assert payload["options"] == {
+        "temperature": 0.1,
+        "num_predict": 220,
+    }
 
 
-def test_lm_studio_client_uses_openai_chat_completions(monkeypatch, tmp_path: Path) -> None:
+def test_ollama_client_uses_native_chat_and_disables_thinking(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     class FakeResponse:
@@ -259,7 +389,7 @@ def test_lm_studio_client_uses_openai_chat_completions(monkeypatch, tmp_path: Pa
             return None
 
         def json(self) -> dict:
-            return {"choices": [{"message": {"content": '{"ok": true}'}}]}
+            return {"message": {"content": '```json\n{"ok": true}\n```'}}
 
     class FakeAsyncClient:
         def __init__(self, *, timeout: float) -> None:
@@ -280,21 +410,25 @@ def test_lm_studio_client_uses_openai_chat_completions(monkeypatch, tmp_path: Pa
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'tripguard-test.db'}",
         uploads_dir=str(tmp_path / "uploads"),
-        llm_base_url="http://127.0.0.1:11434/v1",
+        llm_base_url="http://127.0.0.1:11434",
         llm_model="gemma4:latest",
     )
 
-    result = asyncio.run(LmStudioLlmClient(settings)._chat_json("输出 JSON"))
+    result = asyncio.run(OllamaLlmClient(settings)._chat_json("输出 JSON"))
 
     assert result == {"ok": True}
-    assert captured["url"] == "http://127.0.0.1:11434/v1/chat/completions"
+    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
     assert captured["json"] == {
         "model": "gemma4:latest",
         "messages": [
             {"role": "system", "content": "只输出严格 JSON，不要输出 Markdown。"},
             {"role": "user", "content": "输出 JSON"},
         ],
-        "temperature": 0.1,
-        "max_tokens": 220,
         "stream": False,
+        "think": False,
+        "format": "json",
+        "options": {
+            "temperature": 0.1,
+            "num_predict": 220,
+        },
     }
