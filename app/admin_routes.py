@@ -30,6 +30,10 @@ def create_admin_router(settings: Settings) -> APIRouter:
             raise
         return True
 
+    def ensure_logged_in(request: Request) -> None:
+        if not is_logged_in(request):
+            raise HTTPException(status_code=401, detail="admin login required")
+
     @router.get("/login")
     def login_form(request: Request):
         ensure_configured()

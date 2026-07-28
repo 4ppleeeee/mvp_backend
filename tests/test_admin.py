@@ -52,3 +52,13 @@ def test_logged_in_admin_dashboard_exposes_url_and_image_submission(tmp_path: Pa
     assert response.status_code == 200
     assert 'action="/admin/ingestions/url"' in response.text
     assert 'action="/admin/ingestions/image"' in response.text
+
+
+def test_logged_in_admin_can_submit_video_url(tmp_path: Path) -> None:
+    client = configured_client(tmp_path)
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    response = client.post("/admin/ingestions/url", data={"url": "https://youtu.be/abcdefghijk"}, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/admin/ingestions/ing_")
