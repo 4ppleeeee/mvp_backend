@@ -73,3 +73,11 @@ class MediaMetadata:
 class TemporaryAudio:
     path: str
     duration_seconds: float | None = None
+
+
+@dataclass(frozen=True)
+class ResourceDescriptor:
+    original_url: str
+    canonical_url: str
+    media_type: MediaType
+    source_platform: str | None
