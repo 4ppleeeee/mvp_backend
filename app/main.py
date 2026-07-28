@@ -1,4 +1,5 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 from sqlalchemy.engine import Engine
@@ -7,7 +8,7 @@ from sqlmodel import Session, select
 from app.config import Settings
 from app.db import create_db_engine, init_db
 from app.llm import OllamaLlmClient, normalize_analysis, normalize_query
-from app.models import TravelSource
+from app.models import IngestionJob, TravelSource
 from app.repository import search_sources, to_card, to_used_source
 from app.schemas import (
     AnalyzeSourceResponse,
@@ -17,8 +18,16 @@ from app.schemas import (
     ClientConfigResponse,
     CollectSourceRequest,
     CollectSourceResponse,
+    CreateIngestionRequest,
+    IngestionAcceptedResponse,
+    IngestionStatusResponse,
     SourceListResponse,
 )
+from app.ingestion.classifier import ResourceClassifier
+from app.ingestion.adapters import default_video_adapters
+from app.ingestion.pipeline import VideoPipeline
+from app.ingestion.service import IngestionService
+from app.ingestion.transcriber import BiliNoteWhisperTranscriber
 
 
 def create_app(settings: Settings | None = None, llm_client: object | None = None) -> FastAPI:
@@ -32,10 +41,26 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
     app.state.settings = app_settings
     app.state.engine = engine
     app.state.llm_client = client
+    app.state.ingestion_executor = ThreadPoolExecutor(max_workers=1)
 
     def get_session() -> Session:
         with Session(engine) as session:
             yield session
+
+    def run_ingestion(job_id: str) -> None:
+        with Session(engine) as session:
+            job = session.exec(select(IngestionJob).where(IngestionJob.job_id == job_id)).one()
+            adapter = next(adapter for adapter in default_video_adapters() if adapter.platform == job.source_platform)
+            pipeline = VideoPipeline(
+                adapter=adapter,
+                transcriber=BiliNoteWhisperTranscriber(
+                    model_size=app_settings.whisper_model,
+                    device=app_settings.whisper_device,
+                    compute_type=app_settings.whisper_compute_type,
+                ),
+                temp_root=Path(app_settings.ingestion_temp_dir),
+            )
+            IngestionService(session=session, llm_client=client, pipeline=pipeline).run(job_id)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -51,6 +76,46 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             api_base_url=app_settings.public_base_url,
             service=app_settings.service_name,
             llm_model=app_settings.llm_model,
+        )
+
+    @app.post("/ingestions", response_model=IngestionAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
+    def create_ingestion(request: CreateIngestionRequest, session: Session = Depends(get_session)) -> IngestionAcceptedResponse:
+        descriptor = ResourceClassifier.default().classify_url(request.url)
+        job = IngestionJob(
+            input_type=request.input_type,
+            original_url=descriptor.original_url,
+            canonical_url=descriptor.canonical_url,
+            source_platform=descriptor.source_platform,
+            media_type=descriptor.media_type.value,
+            max_attempts=app_settings.ingestion_max_attempts,
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        if descriptor.media_type.value != "video":
+            job.status = "failed"
+            job.stage = "failed"
+            job.error_code = "unsupported_media_type"
+            job.error_message = "this ingestion endpoint currently supports video URLs"
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+        else:
+            app.state.ingestion_executor.submit(run_ingestion, job.job_id)
+        return IngestionAcceptedResponse(job_id=job.job_id, status=job.status)
+
+    @app.get("/ingestions/{job_id}", response_model=IngestionStatusResponse)
+    def get_ingestion(job_id: str, session: Session = Depends(get_session)) -> IngestionStatusResponse:
+        job = session.exec(select(IngestionJob).where(IngestionJob.job_id == job_id)).first()
+        if job is None:
+            raise HTTPException(status_code=404, detail="ingestion not found")
+        return IngestionStatusResponse(
+            job_id=job.job_id,
+            status=job.status,
+            stage=job.stage,
+            source_id=job.source_id,
+            error_code=job.error_code,
+            error_message=job.error_message,
         )
 
     async def analyze_request(request: CollectSourceRequest) -> AnalyzeSourceResponse:
