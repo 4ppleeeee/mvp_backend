@@ -10,5 +10,10 @@ class Settings(BaseSettings):
     llm_model: str = "gemma4:latest"
     llm_max_tokens: int = 220
     request_timeout_seconds: float = 240.0
+    ingestion_temp_dir: str = "./ingestion-tmp"
+    ingestion_max_attempts: int = 2
+    whisper_model: str = "base"
+    whisper_device: str = "cpu"
+    whisper_compute_type: str = "int8"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="TRIPGUARD_")
