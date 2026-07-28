@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="zh-CN"><body>
+  <h1>TripGuard 管理后台</h1>
+  <form method="post" action="/admin/ingestions/url"><input name="url" type="url" placeholder="粘贴视频链接" required><button>解析链接</button></form>
+  <form method="post" action="/admin/ingestions/image" enctype="multipart/form-data"><input name="file" type="file" accept="image/*" required><button>上传图片</button></form>
+  <ul>{% for job in jobs %}<li><a href="/admin/ingestions/{{ job.job_id }}">{{ job.job_id }}</a> {{ job.status }} / {{ job.stage }}</li>{% endfor %}</ul>
+  <form method="post" action="/admin/logout"><button type="submit">退出登录</button></form>
+</body></html>
