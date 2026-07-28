@@ -1,4 +1,4 @@
-<p><strong>{{ job.status }}</strong> / {{ job.stage }}</p>
+<p class="status status-{{ job.status }}">{{ job.status }}</p><p class="muted">当前阶段：{{ job.stage }}</p>
 {% if job.error_code %}<p role="alert">{{ job.error_code }}：{{ job.error_message }}</p>{% endif %}
 {% if source %}<h2>{{ source.title }}</h2><p>{{ source.body_text }}</p><p>{{ source.destination }} · {{ source.category }} · {{ source.location_name }}</p><p>{{ source.normalized_tags | join('、') }}</p>{% endif %}
 {% if evidence %}<h3>处理证据（{{ evidence.origin }}）</h3><p>{{ evidence.full_text }}</p>{% endif %}

@@ -2,6 +2,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, status
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
@@ -41,6 +42,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
     init_db(engine)
 
     app = FastAPI(title="TripGuard MVP Backend", version="0.1.0")
+    app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
     app.add_middleware(SessionMiddleware, secret_key=app_settings.admin_session_secret or "admin-auth-unconfigured")
     app.state.settings = app_settings
     app.state.engine = engine
