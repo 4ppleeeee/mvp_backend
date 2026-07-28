@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 from app.admin_auth import AdminAuthenticator
 from app.config import Settings
 from app.ingestion.classifier import ResourceClassifier
-from app.models import IngestionJob
+from app.models import IngestionJob, SourceEvidence, TravelSource
 
 
 def create_admin_router(settings: Settings) -> APIRouter:
@@ -94,5 +94,16 @@ def create_admin_router(settings: Settings) -> APIRouter:
     def job_detail(request: Request, job_id: str):
         ensure_logged_in(request)
         return templates.TemplateResponse(request, "job.html", {"job_id": job_id})
+
+    @router.get("/ingestions/{job_id}/fragment")
+    def job_fragment(request: Request, job_id: str):
+        ensure_logged_in(request)
+        with Session(request.app.state.engine) as session:
+            job = session.exec(select(IngestionJob).where(IngestionJob.job_id == job_id)).first()
+            if job is None:
+                raise HTTPException(status_code=404, detail="ingestion not found")
+            source = session.exec(select(TravelSource).where(TravelSource.source_id == job.source_id)).first() if job.source_id else None
+            evidence = session.exec(select(SourceEvidence).where(SourceEvidence.source_id == job.source_id)).first() if job.source_id else None
+        return templates.TemplateResponse(request, "job_fragment.html", {"job": job, "source": source, "evidence": evidence})
 
     return router

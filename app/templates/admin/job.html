@@ -1,1 +1,3 @@
-<!doctype html><html lang="zh-CN"><body><h1>任务 {{ job_id }}</h1><p>正在处理，请返回首页查看状态。</p></body></html>
+<!doctype html><html lang="zh-CN"><body><h1>任务 {{ job_id }}</h1><div id="status">加载中…</div><script>
+async function refresh(){const r=await fetch('/admin/ingestions/{{ job_id }}/fragment');document.querySelector('#status').innerHTML=await r.text();if(!document.querySelector('[data-terminal]')) setTimeout(refresh,2000)} refresh();
+</script></body></html>
