@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     request_timeout_seconds: float = 240.0
     ingestion_temp_dir: str = "./ingestion-tmp"
     ingestion_max_attempts: int = 2
+    ingestion_max_upload_bytes: int = 512 * 1024 * 1024
     whisper_model: str = "base"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"

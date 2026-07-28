@@ -42,6 +42,7 @@ class IngestionJob(SQLModel, table=True):
     job_id: str = Field(default_factory=new_job_id, index=True, unique=True)
     input_type: str = Field(index=True)
     original_url: str | None = Field(default=None, index=True)
+    input_path: str | None = None
     canonical_url: str | None = Field(default=None, index=True)
     source_platform: str | None = Field(default=None, index=True)
     media_type: str = Field(default="unknown", index=True)
