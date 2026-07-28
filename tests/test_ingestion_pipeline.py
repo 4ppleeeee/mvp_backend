@@ -1,0 +1,68 @@
+from dataclasses import dataclass
+
+from app.ingestion.adapters.bilibili import BilibiliAdapter
+from app.ingestion.adapters.youtube import YoutubeAdapter
+from app.ingestion.domain import EvidenceOrigin
+
+
+@dataclass
+class FakeYoutubeTrack:
+    language_code: str
+    language: str
+    is_generated: bool
+    snippets: list[dict[str, object]]
+
+    def fetch(self) -> list[dict[str, object]]:
+        return self.snippets
+
+
+class FakeYoutubeTranscriptList:
+    def __init__(self) -> None:
+        self.manual = FakeYoutubeTrack("zh-Hans", "Chinese", False, [{"text": "人工字幕", "start": 0, "duration": 2}])
+        self.auto = FakeYoutubeTrack("zh", "Chinese", True, [{"text": "自动字幕", "start": 0, "duration": 2}])
+
+    def find_manually_created_transcript(self, _: list[str]) -> FakeYoutubeTrack:
+        return self.manual
+
+    def find_generated_transcript(self, _: list[str]) -> FakeYoutubeTrack:
+        return self.auto
+
+    def __iter__(self):
+        return iter((self.manual, self.auto))
+
+
+class FakeYoutubeClient:
+    def list(self, _: str) -> FakeYoutubeTranscriptList:
+        return FakeYoutubeTranscriptList()
+
+
+def test_youtube_adapter_prefers_bilinote_manual_caption_order() -> None:
+    transcript = YoutubeAdapter(caption_client=FakeYoutubeClient()).fetch_caption("https://youtu.be/abcdefghijk")
+
+    assert transcript is not None
+    assert transcript.origin is EvidenceOrigin.PLATFORM_CAPTION
+    assert transcript.language == "zh-Hans"
+    assert transcript.full_text == "人工字幕"
+
+
+class FakeBilibiliClient:
+    def fetch_tracks(self, _: str, __: int | None) -> list[dict[str, object]]:
+        return [
+            {"lan": "zh-CN", "ai_type": 1, "subtitle_url": "https://caption.example/ai"},
+            {"lan": "zh-CN", "ai_type": 0, "subtitle_url": "https://caption.example/manual"},
+        ]
+
+    def fetch_body(self, url: str) -> list[dict[str, object]]:
+        assert url == "https://caption.example/manual"
+        return [{"from": 0, "to": 2, "content": "B站人工字幕"}]
+
+
+def test_bilibili_adapter_prefers_bilinote_manual_chinese_track() -> None:
+    transcript = BilibiliAdapter(caption_client=FakeBilibiliClient()).fetch_caption(
+        "https://www.bilibili.com/video/BV1xx411c7mD?p=2"
+    )
+
+    assert transcript is not None
+    assert transcript.origin is EvidenceOrigin.PLATFORM_CAPTION
+    assert transcript.language == "zh-CN"
+    assert transcript.full_text == "B站人工字幕"
