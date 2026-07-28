@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Category(StrEnum):
@@ -52,6 +52,33 @@ class CollectSourceRequest(BaseModel):
     body_text: str = Field(min_length=1)
     source_platform: str | None = None
     cover_image_url: str | None = None
+
+
+class CreateIngestionRequest(BaseModel):
+    input_type: Literal["url"] = "url"
+    url: str = Field(min_length=1)
+
+    @field_validator("url")
+    @classmethod
+    def strip_url(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("url must not be empty")
+        return normalized
+
+
+class IngestionAcceptedResponse(BaseModel):
+    job_id: str
+    status: str
+
+
+class IngestionStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    stage: str
+    source_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 class AnalyzeImageRequest(BaseModel):
