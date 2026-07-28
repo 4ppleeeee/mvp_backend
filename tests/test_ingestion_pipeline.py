@@ -1,8 +1,10 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.ingestion.adapters.bilibili import BilibiliAdapter
 from app.ingestion.adapters.youtube import YoutubeAdapter
-from app.ingestion.domain import EvidenceOrigin
+from app.ingestion.domain import EvidenceOrigin, MediaMetadata, TemporaryAudio, Transcript, TranscriptSegment
+from app.ingestion.pipeline import VideoPipeline
 
 
 @dataclass
@@ -66,3 +68,55 @@ def test_bilibili_adapter_prefers_bilinote_manual_chinese_track() -> None:
     assert transcript.origin is EvidenceOrigin.PLATFORM_CAPTION
     assert transcript.language == "zh-CN"
     assert transcript.full_text == "B站人工字幕"
+
+
+@dataclass
+class FakeAdapter:
+    caption: Transcript | None
+
+    def fetch_metadata(self, url: str) -> MediaMetadata:
+        return MediaMetadata(title="视频", source_platform="youtube", canonical_url=url)
+
+    def fetch_caption(self, _: str) -> Transcript | None:
+        return self.caption
+
+    def acquire_audio(self, _: str, job_dir: Path) -> TemporaryAudio:
+        path = job_dir / "audio.m4a"
+        path.write_bytes(b"audio")
+        return TemporaryAudio(path=str(path))
+
+
+class FakeTranscriber:
+    def transcribe(self, _: str) -> Transcript:
+        return Transcript(
+            language="zh",
+            origin=EvidenceOrigin.ASR,
+            full_text="ASR 文本",
+            segments=(TranscriptSegment(start_seconds=0, end_seconds=1, text="ASR 文本"),),
+        )
+
+
+def test_video_pipeline_skips_audio_when_bilinote_caption_exists(tmp_path: Path) -> None:
+    caption = Transcript(
+        language="zh",
+        origin=EvidenceOrigin.PLATFORM_CAPTION,
+        full_text="平台字幕",
+        segments=(TranscriptSegment(start_seconds=0, end_seconds=1, text="平台字幕"),),
+    )
+
+    result = VideoPipeline(adapter=FakeAdapter(caption), transcriber=FakeTranscriber(), temp_root=tmp_path).extract(
+        "https://youtu.be/abcdefghijk", "ing_caption"
+    )
+
+    assert result.transcript is caption
+    assert not (tmp_path / "ing_caption").exists()
+
+
+def test_video_pipeline_transcribes_temporary_audio_without_caption(tmp_path: Path) -> None:
+    result = VideoPipeline(adapter=FakeAdapter(None), transcriber=FakeTranscriber(), temp_root=tmp_path).extract(
+        "https://youtu.be/abcdefghijk", "ing_asr"
+    )
+
+    assert result.transcript.origin is EvidenceOrigin.ASR
+    assert result.transcript.full_text == "ASR 文本"
+    assert not (tmp_path / "ing_asr").exists()

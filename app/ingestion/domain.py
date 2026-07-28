@@ -76,6 +76,12 @@ class TemporaryAudio:
 
 
 @dataclass(frozen=True)
+class EvidenceBundle:
+    metadata: MediaMetadata
+    transcript: Transcript
+
+
+@dataclass(frozen=True)
 class ResourceDescriptor:
     original_url: str
     canonical_url: str
