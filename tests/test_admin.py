@@ -41,3 +41,14 @@ def test_admin_returns_503_when_authentication_is_not_configured(tmp_path: Path)
     client = TestClient(create_app(settings=Settings(database_url=f"sqlite:///{tmp_path / 'missing.db'}")))
 
     assert client.get("/admin/login").status_code == 503
+
+
+def test_logged_in_admin_dashboard_exposes_url_and_image_submission(tmp_path: Path) -> None:
+    client = configured_client(tmp_path)
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert 'action="/admin/ingestions/url"' in response.text
+    assert 'action="/admin/ingestions/image"' in response.text

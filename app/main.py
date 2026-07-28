@@ -70,6 +70,8 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             )
             IngestionService(session=session, llm_client=client, pipeline=pipeline).run(job_id)
 
+    app.state.run_ingestion = run_ingestion
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {
