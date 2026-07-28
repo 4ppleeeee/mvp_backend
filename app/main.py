@@ -2,6 +2,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
+from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
@@ -28,6 +29,7 @@ from app.ingestion.adapters import default_video_adapters
 from app.ingestion.pipeline import VideoPipeline
 from app.ingestion.service import IngestionService
 from app.ingestion.transcriber import BiliNoteWhisperTranscriber
+from app.admin_routes import create_admin_router
 
 
 def create_app(settings: Settings | None = None, llm_client: object | None = None) -> FastAPI:
@@ -38,10 +40,12 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
     init_db(engine)
 
     app = FastAPI(title="TripGuard MVP Backend", version="0.1.0")
+    app.add_middleware(SessionMiddleware, secret_key=app_settings.admin_session_secret or "admin-auth-unconfigured")
     app.state.settings = app_settings
     app.state.engine = engine
     app.state.llm_client = client
     app.state.ingestion_executor = ThreadPoolExecutor(max_workers=1)
+    app.include_router(create_admin_router(app_settings))
 
     def get_session() -> Session:
         with Session(engine) as session:

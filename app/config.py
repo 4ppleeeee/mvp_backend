@@ -15,5 +15,8 @@ class Settings(BaseSettings):
     whisper_model: str = "base"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
+    admin_username: str | None = None
+    admin_password_hash: str | None = None
+    admin_session_secret: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="TRIPGUARD_")
