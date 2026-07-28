@@ -5,6 +5,10 @@ services:
     build:
       context: .
     container_name: tripguard-mvp-backend
+    env_file:
+      - path: .admin.env
+        required: true
+        format: raw
     restart: unless-stopped
     environment:
       TRIPGUARD_DATABASE_URL: sqlite:////data/tripguard.db
@@ -20,9 +24,6 @@ services:
       TRIPGUARD_WHISPER_DEVICE: ${TRIPGUARD_WHISPER_DEVICE:-cpu}
       TRIPGUARD_WHISPER_COMPUTE_TYPE: ${TRIPGUARD_WHISPER_COMPUTE_TYPE:-int8}
       TRIPGUARD_INGESTION_MAX_UPLOAD_BYTES: ${TRIPGUARD_INGESTION_MAX_UPLOAD_BYTES:-536870912}
-      TRIPGUARD_ADMIN_USERNAME: ${TRIPGUARD_ADMIN_USERNAME:?set in the private .env file}
-      TRIPGUARD_ADMIN_PASSWORD_HASH: ${TRIPGUARD_ADMIN_PASSWORD_HASH:?set in the private .env file}
-      TRIPGUARD_ADMIN_SESSION_SECRET: ${TRIPGUARD_ADMIN_SESSION_SECRET:?set in the private .env file}
     volumes:
       - ./data:/data
       - ./uploads:/uploads
