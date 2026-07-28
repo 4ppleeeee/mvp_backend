@@ -27,8 +27,13 @@ class VideoPipeline:
 
     def extract(self, url: str, job_id: str) -> EvidenceBundle:
         with JobDirectory(self._temp_root, job_id) as job_dir:
-            metadata = self._adapter.fetch_metadata(url)
             transcript = self._adapter.fetch_caption(url)
+            try:
+                metadata = self._adapter.fetch_metadata(url)
+            except Exception:
+                if transcript is None:
+                    raise
+                metadata = MediaMetadata(title=url, source_platform="unknown", canonical_url=url)
             if transcript is None:
                 audio = self._adapter.acquire_audio(url, job_dir)
                 transcript = self._transcriber.transcribe(audio.path)

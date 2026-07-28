@@ -120,3 +120,23 @@ def test_video_pipeline_transcribes_temporary_audio_without_caption(tmp_path: Pa
     assert result.transcript.origin is EvidenceOrigin.ASR
     assert result.transcript.full_text == "ASR 文本"
     assert not (tmp_path / "ing_asr").exists()
+
+
+def test_video_pipeline_keeps_public_caption_when_metadata_is_restricted(tmp_path: Path) -> None:
+    caption = Transcript(
+        language="zh",
+        origin=EvidenceOrigin.PLATFORM_CAPTION,
+        full_text="公开视频字幕",
+        segments=(TranscriptSegment(start_seconds=0, end_seconds=1, text="公开视频字幕"),),
+    )
+
+    class CaptionOnlyAdapter(FakeAdapter):
+        def fetch_metadata(self, _: str) -> MediaMetadata:
+            raise RuntimeError("metadata access restricted")
+
+    result = VideoPipeline(adapter=CaptionOnlyAdapter(caption), transcriber=FakeTranscriber(), temp_root=tmp_path).extract(
+        "https://youtu.be/abcdefghijk", "ing_caption_only"
+    )
+
+    assert result.transcript.full_text == "公开视频字幕"
+    assert result.metadata.title == "https://youtu.be/abcdefghijk"
