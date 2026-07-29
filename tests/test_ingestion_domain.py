@@ -61,6 +61,13 @@ def test_classifier_identifies_xiaohongshu_as_article_source() -> None:
     assert descriptor.source_platform == "xiaohongshu"
 
 
+def test_classifier_identifies_xiaoyuzhou_as_audio_source() -> None:
+    descriptor = ResourceClassifier.default().classify_url("https://www.xiaoyuzhoufm.com/episode/6a5f441fa3fec224d5a10e23")
+
+    assert descriptor.media_type is MediaType.AUDIO
+    assert descriptor.source_platform == "xiaoyuzhou"
+
+
 def test_xiaohongshu_video_adapter_matches_public_note_hosts() -> None:
     from app.ingestion.adapters.xiaohongshu import XiaohongshuAdapter
 

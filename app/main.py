@@ -28,10 +28,11 @@ from app.schemas import (
 from app.ingestion.classifier import ResourceClassifier
 from app.ingestion.article import ArticleContentParser, ArticlePipeline
 from app.ingestion.input import extract_first_http_url
-from app.ingestion.adapters import default_video_adapters
-from app.ingestion.pipeline import VideoPipeline
+from app.ingestion.pipeline import MediaPipeline
 from app.ingestion.media import MediaEgressPolicy
+from app.ingestion.planner import IngestionPlan
 from app.ingestion.service import IngestionService
+from app.ingestion.sources import SourceRegistry
 from app.ingestion.transcriber import BiliNoteWhisperTranscriber
 from app.ingestion.image_service import ImageIngestionService
 from app.admin_routes import create_admin_router
@@ -73,12 +74,12 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
                 return
             default_policy = MediaEgressPolicy()
             proxy_policy = MediaEgressPolicy(app_settings.media_proxy_url)
-            primary_adapter = next(
-                adapter
-                for adapter in default_video_adapters(default_policy, include_xiaohongshu=True)
-                if adapter.platform == job.source_platform
-            )
-            pipeline = VideoPipeline(
+            primary_registry = SourceRegistry.default(default_policy, include_xiaohongshu=True)
+            primary_adapter = primary_registry.resolve(job.original_url or "")
+            if primary_adapter is None:
+                raise ValueError(f"no source adapter for platform: {job.source_platform}")
+            primary_plan = IngestionPlan.from_probe(primary_adapter.probe(job.original_url or ""))
+            pipeline = MediaPipeline(
                 adapter=primary_adapter,
                 transcriber=BiliNoteWhisperTranscriber(
                     model_size=app_settings.whisper_model,
@@ -89,15 +90,15 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
                 keyframe_enabled=app_settings.video_keyframes_enabled,
                 frame_interval_seconds=app_settings.video_frame_interval_seconds,
                 grid_size=(app_settings.video_grid_columns, app_settings.video_grid_rows),
+                plan=primary_plan,
             )
             fallback_pipeline = None
             if app_settings.media_proxy_url:
-                fallback_adapter = next(
-                    adapter
-                    for adapter in default_video_adapters(proxy_policy, include_xiaohongshu=True)
-                    if adapter.platform == job.source_platform
-                )
-                fallback_pipeline = VideoPipeline(
+                fallback_registry = SourceRegistry.default(proxy_policy, include_xiaohongshu=True)
+                fallback_adapter = fallback_registry.resolve(job.original_url or "")
+                if fallback_adapter is None:
+                    raise ValueError(f"no fallback source adapter for platform: {job.source_platform}")
+                fallback_pipeline = MediaPipeline(
                     adapter=fallback_adapter,
                     transcriber=BiliNoteWhisperTranscriber(
                         model_size=app_settings.whisper_model,
@@ -108,6 +109,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
                     keyframe_enabled=app_settings.video_keyframes_enabled,
                     frame_interval_seconds=app_settings.video_frame_interval_seconds,
                     grid_size=(app_settings.video_grid_columns, app_settings.video_grid_rows),
+                    plan=IngestionPlan.from_probe(fallback_adapter.probe(job.original_url or "")),
                 )
             IngestionService(
                 session=session, llm_client=client, pipeline=pipeline, fallback_pipeline=fallback_pipeline
@@ -145,7 +147,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
         session.add(job)
         session.commit()
         session.refresh(job)
-        if descriptor.media_type.value not in {"video", "article"}:
+        if descriptor.media_type.value not in {"video", "audio", "article"}:
             job.status = "failed"
             job.stage = "failed"
             job.error_code = "unsupported_media_type"

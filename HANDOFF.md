@@ -38,6 +38,29 @@
 
 本轮曾发现并修复两个问题：后台探测缺少 `ArticleContentParser` 导入，以及小红书 Adapter 缺少 `fetch_caption()` 协议方法。修复前创建并卡住的旧任务不会自动重试，需要重新提交。
 
+## 面向能力的来源编排
+
+已开始将入口从固定的 `article/video/image` 分支迁移为：输入形式 → 来源识别 → 资源探测 → 能力计划 → 证据处理。
+
+- `app/ingestion/capabilities.py`：`ResourceKind`、`Capability`、`SourceProbe`。
+- `app/ingestion/sources.py`：来源注册表，负责按 URL 选择来源适配器。
+- `app/ingestion/planner.py`：根据来源能力决定字幕优先、音频转写和可选关键帧。
+- `app/ingestion/pipeline.py`：新增 `MediaPipeline`，保留 `VideoPipeline` 兼容别名。
+- `app/ingestion/adapters/xiaoyuzhou.py`：公开小宇宙单集 Adapter。
+
+小宇宙单集现在分类为：
+
+```text
+media_type = audio
+source_platform = xiaoyuzhou
+resource_kind = audio
+capabilities = metadata + audio + transcription
+```
+
+已对 `https://www.xiaoyuzhoufm.com/episode/6a5f441fa3fec224d5a10e23` 做只读探测，成功提取标题、时长和公开 `.m4a` 地址；没有下载完整音频或运行长时间 Whisper。
+
+来源专属访问上下文仍是扩展点。未来抖音 `msToken` 应放在抖音 Adapter 的访问上下文内，不应成为全局 video 能力；继续禁止 Cookie 持久化、验证码和浏览器自动化。
+
 ## 最新关键帧媒体管线
 
 关键帧功能已实现，但默认关闭，不改变正常字幕/Whisper 流程。
@@ -136,12 +159,15 @@ tripguard-mvp-backend Up
 - `git diff --check`
 - claw 容器内真实 Python 3.12 环境下的关键帧提取、管线返回和默认关闭测试；均通过。
 - claw backend 健康检查通过。
+- claw Python 3.12 容器中本地仓库测试（排除 claw 上额外保留的 `tests/test_douyin_api.py`）为 `82 passed, 2 warnings`。
 - 关键帧代码本地与远端 SHA-256 一致。
 
 没有完成：
 
 - 真实公开视频端到端关键帧下载测试。之前选中的 YouTube 视频约 1.14 GiB，下载到约 95% 时为避免继续消耗带宽而中止。不要把这次测试描述为完整端到端成功。
 - 本地完整 pytest。原因是本地 Python 3.9 与项目 Python 3.12 目标不一致。
+
+claw 目录还保留一组没有同步回本地 Git 的抖音 `msToken` 实验文件和测试；该组测试当前有 4 个失败，原因是它依赖未纳入本地仓库的 `DouyinApiClient`/Adapter 接线。不要把这组远端额外测试的结果与本地提交混在一起，后续如继续抖音工作应先把它们安全带回 Git 并重新审查边界。
 
 如果继续验证，优先使用较小、公开、可下载的视频，并在 claw 容器内测试；不要使用 Cookie 或验证码绕过。
 

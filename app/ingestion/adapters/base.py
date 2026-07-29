@@ -2,7 +2,8 @@ from abc import ABC
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from app.ingestion.domain import MediaMetadata, TemporaryAudio
+from app.ingestion.capabilities import Capability, ResourceKind, SourceProbe
+from app.ingestion.domain import MediaMetadata, TemporaryAudio, Transcript
 from app.ingestion.media import BiliNoteYtDlpAcquirer, MediaEgressPolicy
 
 
@@ -21,6 +22,19 @@ class BaseVideoAdapter(ABC):
 
     def normalize(self, url: str) -> str:
         return url
+
+    def probe(self, url: str) -> SourceProbe:
+        return SourceProbe(
+            source_platform=self.platform,
+            resource_kind=ResourceKind.VIDEO,
+            capabilities=frozenset(
+                {Capability.METADATA, Capability.CAPTION, Capability.AUDIO, Capability.VIDEO, Capability.TRANSCRIPTION}
+            ),
+            canonical_url=self.normalize(url),
+        )
+
+    def fetch_caption(self, url: str) -> Transcript | None:
+        return None
 
     def fetch_metadata(self, url: str) -> MediaMetadata:
         return BiliNoteYtDlpAcquirer(self._media_egress_policy).download(

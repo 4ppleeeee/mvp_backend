@@ -161,7 +161,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
             session.commit()
             session.refresh(job)
             job_id = job.job_id
-        if descriptor.media_type.value in {"video", "article"}:
+        if descriptor.media_type.value in {"video", "audio", "article"}:
             request.app.state.ingestion_executor.submit(request.app.state.run_ingestion, job_id)
         return RedirectResponse(f"/admin/ingestions/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
 

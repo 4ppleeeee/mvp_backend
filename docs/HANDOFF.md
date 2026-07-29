@@ -27,6 +27,20 @@
 - `TravelSource.summary_text`：仅由 LLM 生成的卡片摘要，管理后台结果页和推荐的首轮上下文使用它。
 - 管理后台展示 `summary_text`，可展开 `SourceEvidence.full_text` 查看完整证据。
 
+## 当前来源与能力编排
+
+Ingestion 正在从固定的 `article/video/image` 分支迁移为“输入形式 → 来源 → 资源类型 → 能力计划”。相关实现包括：
+
+- `app/ingestion/capabilities.py`：资源类型和能力定义；
+- `app/ingestion/sources.py`：来源注册表；
+- `app/ingestion/planner.py`：字幕、音频转写、视频/关键帧的能力规划；
+- `app/ingestion/pipeline.py`：`MediaPipeline`，保留 `VideoPipeline` 兼容别名；
+- `app/ingestion/adapters/xiaoyuzhou.py`：公开小宇宙纯音频单集 Adapter。
+
+小宇宙单集使用 `media_type=audio`，不再伪装成 `video`。用户提供的单集链接已在 claw 上只读探测成功，能够提取公开音频地址、标题和时长；完整音频下载与 Whisper 需谨慎执行，因为单集可能很长。
+
+来源专属访问逻辑应封装在来源 Adapter 的访问上下文中。例如抖音 `msToken` 应属于抖音来源访问准备，不应被抽象成全局 video 能力；不得引入 Cookie 持久化、验证码或浏览器自动化。
+
 不要为了适配小上下文模型而截断或覆盖完整证据。模型只输出结构化字段和有长度上限的摘要；长文本应更换长上下文模型，或在将来做分段检索/合并，原文始终保留。
 
 当前已验证的视频资料：任务 `ing_f6cf9d145b1a4fab`，资料 `src_506da751a09f4a61`，是京都伏见稻荷大社攻略。

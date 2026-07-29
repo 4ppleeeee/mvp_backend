@@ -4,6 +4,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from app.ingestion.adapters.base import BaseVideoAdapter
 from app.ingestion.domain import EvidenceOrigin, Transcript, TranscriptSegment
+from app.ingestion.media import MediaEgressPolicy
 
 
 class BilibiliCaptionClient(Protocol):
@@ -61,8 +62,13 @@ class BilibiliAdapter(BaseVideoAdapter):
     platform = "bilibili"
     hosts = frozenset({"bilibili.com", "www.bilibili.com", "b23.tv"})
 
-    def __init__(self, *, caption_client: BilibiliCaptionClient | None = None) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        *,
+        caption_client: BilibiliCaptionClient | None = None,
+        media_egress_policy: MediaEgressPolicy | None = None,
+    ) -> None:
+        super().__init__(media_egress_policy=media_egress_policy)
         self._caption_client = caption_client
 
     def fetch_caption(self, video_url: str) -> Transcript | None:

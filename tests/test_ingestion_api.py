@@ -53,6 +53,19 @@ def test_create_ingestion_queues_xiaohongshu_article_url(tmp_path: Path) -> None
     assert len(executor.calls) == 1
 
 
+def test_create_ingestion_queues_xiaoyuzhou_audio_url(tmp_path: Path) -> None:
+    client, executor = make_client(tmp_path)
+
+    response = client.post(
+        "/ingestions",
+        json={"url": "https://www.xiaoyuzhoufm.com/episode/6a5f441fa3fec224d5a10e23"},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert len(executor.calls) == 1
+
+
 def test_main_exposes_xiaohongshu_video_detector_for_background_ingestion() -> None:
     assert ArticleContentParser.is_xhs_video_html('<video src="https://cdn.example/video.mp4"></video>')
 

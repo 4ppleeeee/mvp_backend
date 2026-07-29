@@ -3,8 +3,9 @@ from pathlib import Path
 
 from app.ingestion.adapters.bilibili import BilibiliAdapter
 from app.ingestion.adapters.youtube import YoutubeAdapter
+from app.ingestion.capabilities import Capability, ResourceKind, SourceProbe
 from app.ingestion.domain import EvidenceOrigin, EvidenceBundle, MediaMetadata, TemporaryAudio, Transcript, TranscriptSegment
-from app.ingestion.pipeline import VideoPipeline
+from app.ingestion.pipeline import MediaPipeline, VideoPipeline
 from youtube_transcript_api._transcripts import FetchedTranscriptSnippet
 
 
@@ -147,6 +148,22 @@ def test_video_pipeline_transcribes_temporary_audio_without_caption(tmp_path: Pa
     assert result.transcript.origin is EvidenceOrigin.ASR
     assert result.transcript.full_text == "ASR 文本"
     assert not (tmp_path / "ing_asr").exists()
+
+
+def test_media_pipeline_transcribes_audio_resource_without_requesting_video(tmp_path: Path) -> None:
+    adapter = FakeAdapter(None)
+    adapter.probe = lambda _: SourceProbe(
+        source_platform="xiaoyuzhou",
+        resource_kind=ResourceKind.AUDIO,
+        capabilities=frozenset({Capability.METADATA, Capability.AUDIO, Capability.TRANSCRIPTION}),
+    )
+
+    result = MediaPipeline(adapter=adapter, transcriber=FakeTranscriber(), temp_root=tmp_path).extract(
+        "https://www.xiaoyuzhoufm.com/episode/abc", "ing_audio"
+    )
+
+    assert result.transcript.origin is EvidenceOrigin.ASR
+    assert not (tmp_path / "ing_audio").exists()
 
 
 def test_video_pipeline_keeps_public_caption_when_metadata_is_restricted(tmp_path: Path) -> None:

@@ -1,9 +1,12 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.ingestion.capabilities import Capability, ResourceKind
+
 
 class MediaType(StrEnum):
     ARTICLE = "article"
+    AUDIO = "audio"
     IMAGE = "image"
     VIDEO = "video"
     DOCUMENT = "document"
@@ -88,6 +91,8 @@ class ResourceDescriptor:
     canonical_url: str
     media_type: MediaType
     source_platform: str | None
+    resource_kind: ResourceKind = ResourceKind.UNKNOWN
+    capabilities: frozenset[Capability] = frozenset()
 
 
 class MediaExtractionError(RuntimeError):

@@ -1,11 +1,14 @@
-"""Subtitle-first video extraction following BiliNote's NoteGenerator order."""
+"""Capability-driven media extraction following BiliNote's subtitle-first order."""
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
-from app.ingestion.domain import EvidenceBundle, MediaExtractionError, MediaMetadata, TemporaryAudio, Transcript
+from app.ingestion.capabilities import Capability, ResourceKind
+from app.ingestion.domain import EvidenceBundle, MediaExtractionError, MediaMetadata, MediaType, TemporaryAudio, Transcript
 from app.ingestion.keyframes import extract_keyframe_images
 from app.ingestion.media import JobDirectory
+from app.ingestion.planner import IngestionPlan
 
 
 class PipelineAdapter(Protocol):
@@ -22,7 +25,7 @@ class PipelineTranscriber(Protocol):
     def transcribe(self, file_path: str) -> Transcript: ...
 
 
-class VideoPipeline:
+class MediaPipeline:
     def __init__(
         self,
         *,
@@ -32,6 +35,7 @@ class VideoPipeline:
         keyframe_enabled: bool = False,
         frame_interval_seconds: int = 6,
         grid_size: tuple[int, int] = (2, 2),
+        plan: IngestionPlan | None = None,
     ) -> None:
         self._adapter = adapter
         self._transcriber = transcriber
@@ -39,6 +43,8 @@ class VideoPipeline:
         self._keyframe_enabled = keyframe_enabled
         self._frame_interval_seconds = frame_interval_seconds
         self._grid_size = grid_size
+        probe = getattr(adapter, "probe", None)
+        self._plan = plan or (IngestionPlan.from_probe(probe("")) if callable(probe) else None)
 
     @property
     def media_egress(self) -> str:
@@ -46,7 +52,8 @@ class VideoPipeline:
 
     def extract(self, url: str, job_id: str) -> EvidenceBundle:
         with JobDirectory(self._temp_root, job_id) as job_dir:
-            transcript = self._adapter.fetch_caption(url)
+            can_fetch_caption = self._plan is None or self._plan.fetch_caption_first
+            transcript = self._adapter.fetch_caption(url) if can_fetch_caption else None
             try:
                 metadata = self._adapter.fetch_metadata(url)
             except MediaExtractionError:
@@ -57,6 +64,8 @@ class VideoPipeline:
                 metadata = MediaMetadata(title=url, source_platform="unknown", canonical_url=url)
             keyframe_images: tuple[str, ...] = ()
             if self._keyframe_enabled:
+                if self._plan is not None and not self._plan.probe.supports(Capability.VIDEO):
+                    raise MediaExtractionError("keyframe", self.media_egress, "source does not support video keyframes", retryable=False)
                 try:
                     video_path = self._adapter.acquire_video(url, job_dir)
                     keyframe_images = extract_keyframe_images(
@@ -71,6 +80,13 @@ class VideoPipeline:
                     route = self.media_egress
                     raise MediaExtractionError("keyframe", route, str(exc), retryable=True) from exc
             if transcript is None:
+                if self._plan is not None and not self._plan.transcribe_audio_when_caption_missing:
+                    raise MediaExtractionError("audio", self.media_egress, "source does not support audio transcription", retryable=False)
                 audio = self._adapter.acquire_audio(url, job_dir)
                 transcript = self._transcriber.transcribe(audio.path)
+            if self._plan is not None and self._plan.probe.resource_kind is ResourceKind.AUDIO:
+                transcript = replace(transcript, media_type=MediaType.AUDIO)
             return EvidenceBundle(metadata=metadata, transcript=transcript, keyframe_images=keyframe_images)
+
+
+VideoPipeline = MediaPipeline
