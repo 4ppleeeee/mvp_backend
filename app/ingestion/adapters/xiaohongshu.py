@@ -8,6 +8,6 @@ class XiaohongshuAdapter(BaseVideoAdapter):
     platform = "xiaohongshu"
     hosts = frozenset({"xiaohongshu.com", "www.xiaohongshu.com", "xhslink.cn", "xhslink.com"})
 
-    def fetch_caption(self, url: str) -> Transcript | None:
+    def fetch_caption(self, _: str) -> Transcript | None:
         """XHS has no supported public caption endpoint; let the pipeline use Whisper."""
         return None

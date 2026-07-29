@@ -7,3 +7,7 @@ The subtitle-priority flow, yt-dlp audio options, FFmpeg audio extraction and fa
 Copyright (c) 2024 Jeffery Huang
 
 Licensed under the MIT License. A copy of the license is available at <https://github.com/JefferyHcool/BiliNote/blob/master/LICENSE>.
+
+## Douyin a_bogus signer
+
+`app/ingestion/douyin_abogus.py` is a verbatim dependency retained with its upstream attribution and GPLv3 notice. It originates from [JoeanAmier/TikTokDownloader](https://github.com/JoeanAmier/TikTokDownloader), via the BiliNote Douyin downloader. Do not remove that file's license header or attribution.
