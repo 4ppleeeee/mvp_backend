@@ -37,7 +37,7 @@ def test_article_content_parser_uses_open_graph_as_generic_fallback() -> None:
     <html><head>
       <meta property="og:title" content="京都三日路线">
       <meta name="description" content="清水寺、岚山与咖啡店安排。">
-      <meta property="og:image" content="https://img.example/kyoto.jpg">
+      <meta property="og:image" content="http://img.example/kyoto.jpg">
     </head><body><p>ignored body</p></body></html>
     """
 

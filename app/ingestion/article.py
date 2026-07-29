@@ -174,7 +174,7 @@ class ArticleContentParser:
             platform="xiaohongshu",
             title=self._clean_text(note.get("title")),
             body_text=self._clean_text(note.get("desc")) or self._extract_xhs_dom_description(page_html),
-            cover_image_url=self._clean_text(first_image.get("urlDefault")) or self._clean_text(first_image.get("url")),
+            cover_image_url=self._normalize_cover_url(first_image.get("urlDefault")) or self._normalize_cover_url(first_image.get("url")),
         )
 
     @staticmethod
@@ -197,7 +197,7 @@ class ArticleContentParser:
             platform=platform,
             title=self._clean_text(title),
             body_text=self._clean_text(description),
-            cover_image_url=self._clean_text(image),
+            cover_image_url=self._normalize_cover_url(image),
         )
 
     @staticmethod
@@ -221,6 +221,13 @@ class ArticleContentParser:
         decoded = html_module.unescape(value)
         cleaned = "\n".join(part.strip() for part in decoded.splitlines() if part.strip()) if preserve_lines else " ".join(decoded.split())
         return cleaned or None
+
+    @classmethod
+    def _normalize_cover_url(cls, value: object) -> str | None:
+        url = cls._clean_text(value)
+        if url is not None and url.startswith("http://"):
+            return f"https://{url.removeprefix('http://')}"
+        return url
 
 
 class ArticlePipeline:
