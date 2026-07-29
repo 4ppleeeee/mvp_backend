@@ -63,11 +63,13 @@ def create_admin_router(settings: Settings) -> APIRouter:
         return templates.TemplateResponse(request, "dashboard.html", {"jobs": jobs})
 
     @router.get("/sources")
-    def sources(request: Request):
+    def sources(request: Request, source_id: str | None = None):
         ensure_logged_in(request)
         with Session(request.app.state.engine) as session:
             items = session.exec(select(TravelSource).order_by(TravelSource.created_at.desc()).limit(60)).all()
-        return templates.TemplateResponse(request, "sources.html", {"sources": items})
+            selected = next((item for item in items if item.source_id == source_id), items[0] if items else None)
+            evidence = session.exec(select(SourceEvidence).where(SourceEvidence.source_id == selected.source_id)).first() if selected else None
+        return templates.TemplateResponse(request, "sources.html", {"sources": items, "selected": selected, "evidence": evidence})
 
     @router.get("/sources/{source_id}")
     def source_detail(request: Request, source_id: str):

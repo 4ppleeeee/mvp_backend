@@ -83,6 +83,7 @@ def test_logged_in_admin_dashboard_exposes_url_and_image_submission(tmp_path: Pa
     assert 'action="/admin/ingestions/url"' in response.text
     assert 'action="/admin/ingestions/image"' in response.text
     assert 'href="/admin/sources"' in response.text
+    assert 'class="task-workspace"' in response.text
 
 
 def test_logged_in_admin_lists_only_saved_results(tmp_path: Path) -> None:
@@ -95,7 +96,8 @@ def test_logged_in_admin_lists_only_saved_results(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert "解析结果" in response.text
     assert "北京：个人觉得无法超越的漂亮公园" in response.text
-    assert f'href="/admin/sources/{source_id}"' in response.text
+    assert 'class="result-workspace"' in response.text
+    assert f'href="/admin/sources?source_id={source_id}"' in response.text
 
 
 def test_logged_in_admin_shows_saved_result_card(tmp_path: Path) -> None:
@@ -108,6 +110,7 @@ def test_logged_in_admin_shows_saved_result_card(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert "北京：个人觉得无法超越的漂亮公园" in response.text
     assert "拍照好看" in response.text
+    assert 'class="selected-result"' in response.text
 
 
 def test_admin_login_uses_the_refreshed_visual_shell(tmp_path: Path) -> None:
@@ -116,6 +119,7 @@ def test_admin_login_uses_the_refreshed_visual_shell(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert 'class="login-shell"' in response.text
     assert 'href="/static/admin.css"' in response.text
+    assert 'class="login-artwork"' in response.text
 
 
 def test_logged_in_admin_can_submit_video_url(tmp_path: Path) -> None:
