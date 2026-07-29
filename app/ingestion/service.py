@@ -48,7 +48,8 @@ class IngestionService:
             if analysis.is_travel_related:
                 source = TravelSource(
                     title=analysis.title or bundle.metadata.title,
-                    body_text=analysis.body_text or bundle.transcript.full_text,
+                    body_text=bundle.transcript.full_text,
+                    summary_text=analysis.body_text,
                     original_url=job.original_url,
                     source_platform=bundle.metadata.source_platform,
                     cover_image_url=bundle.metadata.thumbnail_url,

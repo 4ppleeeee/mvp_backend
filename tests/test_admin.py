@@ -101,6 +101,31 @@ def test_logged_in_admin_lists_only_saved_results(tmp_path: Path) -> None:
     assert f"background-image:url('/admin/sources/{source_id}/cover')" in response.text
 
 
+def test_logged_in_admin_loads_youtube_cover_directly_without_proxy(tmp_path: Path) -> None:
+    client = configured_client(tmp_path)
+    with Session(client.app.state.engine) as session:
+        source = TravelSource(
+            title="伏见稻荷大社交通攻略",
+            body_text="京都伏见稻荷大社的交通与游玩建议。",
+            original_url="https://www.youtube.com/watch?v=OKFijPl39bY",
+            source_platform="youtube",
+            cover_image_url="https://i.ytimg.com/vi/OKFijPl39bY/maxresdefault.jpg",
+            destination="京都",
+            category="play",
+        )
+        session.add(source)
+        session.commit()
+        session.refresh(source)
+        source_id = source.source_id
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    response = client.get("/admin/sources")
+
+    assert response.status_code == 200
+    assert f"background-image:url('https://i.ytimg.com/vi/OKFijPl39bY/maxresdefault.jpg')" in response.text
+    assert f"background-image:url('/admin/sources/{source_id}/cover')" not in response.text
+
+
 def test_logged_in_admin_shows_saved_result_card(tmp_path: Path) -> None:
     client = configured_client(tmp_path)
     source_id = create_saved_source(client)

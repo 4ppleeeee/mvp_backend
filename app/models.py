@@ -26,6 +26,7 @@ class TravelSource(SQLModel, table=True):
     source_id: str = Field(default_factory=new_source_id, index=True, unique=True)
     title: str
     body_text: str
+    summary_text: str | None = None
     original_url: str | None = Field(default=None, index=True)
     source_platform: str | None = Field(default=None, index=True)
     cover_image_url: str | None = None

@@ -28,6 +28,7 @@ class ImageIngestionService:
                 source = TravelSource(
                     title=analysis.title or image_path.name,
                     body_text=analysis.body_text or analysis.title or image_path.name,
+                    summary_text=analysis.body_text,
                     original_url=None,
                     source_platform="image",
                     cover_image_url=None,

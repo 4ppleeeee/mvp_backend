@@ -22,6 +22,7 @@ def init_db(engine: Engine) -> None:
     if engine.dialect.name != "sqlite":
         return
     columns = {column["name"] for column in inspect(engine).get_columns("ingestionjob")}
+    source_columns = {column["name"] for column in inspect(engine).get_columns("travelsource")}
     with engine.begin() as connection:
         if "media_egress" not in columns:
             connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN media_egress VARCHAR"))
@@ -31,6 +32,8 @@ def init_db(engine: Engine) -> None:
             connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN analysis_json JSON"))
         if "evidence_text" not in columns:
             connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN evidence_text TEXT"))
+        if "summary_text" not in source_columns:
+            connection.execute(text("ALTER TABLE travelsource ADD COLUMN summary_text TEXT"))
 
 
 def session_scope(engine: Engine) -> Iterator[Session]:

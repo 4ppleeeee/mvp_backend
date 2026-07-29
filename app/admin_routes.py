@@ -1,5 +1,5 @@
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import RedirectResponse, Response
@@ -38,6 +38,18 @@ def create_admin_router(settings: Settings) -> APIRouter:
         if not is_logged_in(request):
             raise HTTPException(status_code=401, detail="admin login required")
 
+    def display_cover_url(source: TravelSource) -> str | None:
+        if not source.cover_image_url:
+            return None
+        parsed = urlsplit(source.cover_image_url)
+        if (
+            source.source_platform == "youtube"
+            and parsed.scheme == "https"
+            and parsed.hostname in {"i.ytimg.com", "i3.ytimg.com"}
+        ):
+            return source.cover_image_url
+        return f"/admin/sources/{source.source_id}/cover"
+
     @router.get("/login")
     def login_form(request: Request):
         ensure_configured()
@@ -72,7 +84,11 @@ def create_admin_router(settings: Settings) -> APIRouter:
             items = session.exec(select(TravelSource).order_by(TravelSource.created_at.desc()).limit(60)).all()
             selected = next((item for item in items if item.source_id == source_id), items[0] if items else None)
             evidence = session.exec(select(SourceEvidence).where(SourceEvidence.source_id == selected.source_id)).first() if selected else None
-        return templates.TemplateResponse(request, "sources.html", {"sources": items, "selected": selected, "evidence": evidence})
+        return templates.TemplateResponse(
+            request,
+            "sources.html",
+            {"sources": items, "selected": selected, "evidence": evidence, "display_cover_url": display_cover_url},
+        )
 
     @router.get("/sources/{source_id}")
     def source_detail(request: Request, source_id: str):
@@ -82,7 +98,11 @@ def create_admin_router(settings: Settings) -> APIRouter:
             if source is None:
                 raise HTTPException(status_code=404, detail="source not found")
             evidence = session.exec(select(SourceEvidence).where(SourceEvidence.source_id == source_id)).first()
-        return templates.TemplateResponse(request, "source_detail.html", {"source": source, "evidence": evidence})
+        return templates.TemplateResponse(
+            request,
+            "source_detail.html",
+            {"source": source, "evidence": evidence, "display_cover_url": display_cover_url},
+        )
 
     @router.get("/sources/{source_id}/cover")
     def source_cover(request: Request, source_id: str):

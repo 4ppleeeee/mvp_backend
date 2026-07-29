@@ -15,6 +15,7 @@ class TravelLlm:
         return SourceAnalysis(
             is_travel_related=True,
             confidence=0.9,
+            body_text="表参道咖啡路线的卡片摘要。",
             destination="东京",
             category="eat",
             location_name="表参道",
@@ -53,6 +54,8 @@ def test_ingestion_service_saves_source_and_timestamped_evidence(tmp_path: Path)
         evidence = session.exec(select(SourceEvidence).where(SourceEvidence.source_id == source.source_id)).one()
         assert result.status == "succeeded"
         assert source.title == "东京咖啡路线"
+        assert source.body_text == "表参道咖啡路线"
+        assert source.summary_text == "表参道咖啡路线的卡片摘要。"
         assert evidence.full_text == "表参道咖啡路线"
         assert evidence.segments == [{"start_seconds": 0, "end_seconds": 2, "text": "表参道咖啡路线"}]
         assert result.evidence_text == "表参道咖啡路线"

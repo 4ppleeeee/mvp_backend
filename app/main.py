@@ -315,6 +315,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             raise HTTPException(status_code=404, detail="source not found")
         card = to_card(source).model_dump()
         card["body_text"] = source.body_text
+        card["summary_text"] = source.summary_text
         return card
 
     @app.post("/chat/recommend", response_model=ChatRecommendResponse)
@@ -334,7 +335,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             {
                 "source_id": source.source_id,
                 "title": source.title,
-                "body_text": source.body_text,
+                "body_text": source.summary_text or source.body_text,
                 "original_url": source.original_url,
                 "destination": source.destination,
                 "category": source.category,
