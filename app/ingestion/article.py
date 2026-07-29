@@ -146,6 +146,25 @@ class ArticleContentParser:
             return "mafengwo"
         return "web"
 
+    @staticmethod
+    def is_xhs_video_html(page_html: str) -> bool:
+        """Detect a public Xiaohongshu video note without account state."""
+
+        lowered = page_html.lower()
+        if "<video" in lowered or re.search(r"https?[^\"'\\\s<>]+\.(?:mp4|m3u8)(?:\?[^\"'\\\s<>]*)?", page_html, re.IGNORECASE):
+            return True
+        return any(marker in lowered for marker in ("videoinfo", "video_url", "videourl", "masterurl", "playurl"))
+
+    @classmethod
+    def is_xhs_video_url(cls, url: str, fetcher: HtmlFetcher | None = None) -> bool:
+        if cls.platform_for_url(url) != "xiaohongshu":
+            return False
+        try:
+            page = (fetcher or SafeHtmlFetcher()).fetch(url)
+        except Exception:
+            return False
+        return cls.is_xhs_video_html(page.html)
+
     def _parse_xhs(self, url: str, page_html: str) -> ArticleContent | None:
         state = self._extract_initial_state(page_html)
         if state is None:

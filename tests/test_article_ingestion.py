@@ -4,7 +4,7 @@ from sqlmodel import Session, select
 
 from app.config import Settings
 from app.db import create_db_engine, init_db
-from app.ingestion.article import ArticleContentParser
+from app.ingestion.article import ArticleContentParser, FetchedHtml
 from app.ingestion.domain import EvidenceBundle, EvidenceOrigin, MediaMetadata, MediaType, Transcript, TranscriptSegment
 from app.ingestion.service import IngestionService
 from app.llm import SourceAnalysis
@@ -30,6 +30,23 @@ def test_article_content_parser_extracts_xhs_public_h5_note() -> None:
     assert content.title == "三亚亲子旅行路线"
     assert content.body_text == "海边酒店、免税店和椰梦长廊安排。"
     assert content.cover_image_url == "https://img.example/xhs-cover.jpg"
+
+
+def test_article_content_parser_detects_xhs_video_page() -> None:
+    html = '<script>window.__INITIAL_STATE__={"note":{"noteDetailMap":{"abc":{"note":{"video":{"url":"https://sns-video-v6.xhscdn.com/clip.mp4"}}}}}};</script>'
+
+    assert ArticleContentParser.is_xhs_video_html(html)
+
+
+def test_article_content_parser_probes_xhs_video_url_without_network() -> None:
+    class FakeFetcher:
+        def fetch(self, url: str) -> FetchedHtml:
+            return FetchedHtml(url=url, html='<video src="https://sns-video-v6.xhscdn.com/clip.mp4"></video>')
+
+    assert ArticleContentParser.is_xhs_video_url(
+        "https://www.xiaohongshu.com/discovery/item/abc",
+        fetcher=FakeFetcher(),
+    )
 
 
 def test_article_content_parser_uses_open_graph_as_generic_fallback() -> None:

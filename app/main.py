@@ -26,7 +26,7 @@ from app.schemas import (
     SourceListResponse,
 )
 from app.ingestion.classifier import ResourceClassifier
-from app.ingestion.article import ArticlePipeline
+from app.ingestion.article import ArticleContentParser, ArticlePipeline
 from app.ingestion.input import extract_first_http_url
 from app.ingestion.adapters import default_video_adapters
 from app.ingestion.pipeline import VideoPipeline
@@ -63,12 +63,21 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             if job.input_type == "image":
                 ImageIngestionService(session=session, llm_client=client).run(job_id)
                 return
+            if job.media_type == "article" and job.source_platform == "xiaohongshu":
+                if ArticleContentParser.is_xhs_video_url(job.original_url or ""):
+                    job.media_type = "video"
+                    session.add(job)
+                    session.commit()
             if job.media_type == "article":
                 IngestionService(session=session, llm_client=client, pipeline=ArticlePipeline()).run(job_id)
                 return
             default_policy = MediaEgressPolicy()
             proxy_policy = MediaEgressPolicy(app_settings.media_proxy_url)
-            primary_adapter = next(adapter for adapter in default_video_adapters(default_policy) if adapter.platform == job.source_platform)
+            primary_adapter = next(
+                adapter
+                for adapter in default_video_adapters(default_policy, include_xiaohongshu=True)
+                if adapter.platform == job.source_platform
+            )
             pipeline = VideoPipeline(
                 adapter=primary_adapter,
                 transcriber=BiliNoteWhisperTranscriber(
@@ -84,7 +93,9 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             fallback_pipeline = None
             if app_settings.media_proxy_url:
                 fallback_adapter = next(
-                    adapter for adapter in default_video_adapters(proxy_policy) if adapter.platform == job.source_platform
+                    adapter
+                    for adapter in default_video_adapters(proxy_policy, include_xiaohongshu=True)
+                    if adapter.platform == job.source_platform
                 )
                 fallback_pipeline = VideoPipeline(
                     adapter=fallback_adapter,
