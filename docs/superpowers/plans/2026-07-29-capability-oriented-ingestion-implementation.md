@@ -1,96 +1,102 @@
-# Capability-Oriented Ingestion Implementation Plan
+# 面向能力的 Ingestion 编排实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **给执行代理的说明：** 必须使用 `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`，按任务逐项执行。所有步骤使用复选框跟踪。
 
-**Goal:** Refactor ingestion dispatch around source adapters and capabilities, add public Xiaoyuzhou audio ingestion, and preserve existing platform behavior.
+**目标：** 将 Ingestion 调度重构为基于来源适配器和能力的编排，接入小宇宙公开音频，同时保持现有平台行为。
 
-**Architecture:** Add a source registry, probe/result types, capability declarations, and a planner that executes common evidence steps through source-specific adapters. Keep current persisted fields and compatibility APIs while moving dispatch out of the `article`/`video` conditional.
+**架构：** 增加来源注册表、探测结果、能力声明和规划器。规划器负责通用证据处理顺序，来源适配器负责各平台具体的访问和资源获取。保留现有持久化字段和兼容 API，并逐步移除 `article/video` 分支对内部调度的耦合。
 
-**Tech Stack:** Python 3.12, FastAPI, SQLModel, yt-dlp, requests, FFmpeg, faster-whisper, pytest.
+**技术栈：** Python 3.12、FastAPI、SQLModel、requests、yt-dlp、FFmpeg、faster-whisper、pytest。
 
 ---
 
-### Task 1: Add source and capability domain types
+### 任务 1：增加来源与能力领域类型
 
-**Files:**
-- Create: `app/ingestion/capabilities.py`
-- Modify: `app/ingestion/domain.py`
-- Test: `tests/test_ingestion_capabilities.py`
+**文件：**
 
-- [ ] **Step 1: Write failing tests** for `ResourceKind`, `Capability`, `SourceProbe`, and deterministic capability ordering.
-- [ ] **Step 2: Run** `pytest -q tests/test_ingestion_capabilities.py` and confirm the new imports fail.
-- [ ] **Step 3: Implement** string enums and immutable probe/plan data classes. Keep `MediaType` as a compatibility alias at API boundaries.
-- [ ] **Step 4: Run** the focused tests and confirm they pass.
-- [ ] **Step 5: Run** `git diff --check`.
+- 新建：`app/ingestion/capabilities.py`
+- 修改：`app/ingestion/domain.py`
+- 测试：`tests/test_ingestion_capabilities.py`
 
-### Task 2: Define the source adapter boundary and registry
+- [ ] **步骤 1：先写失败测试**，覆盖 `ResourceKind`、`Capability`、`SourceProbe` 和确定性的能力排序。
+- [ ] **步骤 2：运行** `pytest -q tests/test_ingestion_capabilities.py`，确认新类型尚不存在。
+- [ ] **步骤 3：实现**字符串枚举和不可变的探测/计划数据类。保留 `MediaType`，只在 API 边界作为兼容类型使用。
+- [ ] **步骤 4：运行聚焦测试**，确认测试通过。
+- [ ] **步骤 5：运行** `git diff --check`。
 
-**Files:**
-- Create: `app/ingestion/sources.py`
-- Modify: `app/ingestion/adapters/base.py`
-- Modify: `app/ingestion/adapters/__init__.py`
-- Test: `tests/test_source_registry.py`
+### 任务 2：定义来源适配器边界和注册表
 
-- [ ] **Step 1: Write failing tests** showing registry lookup by URL host, a source probe returning resource kind/capabilities, and unsupported operations raising a typed extraction error.
-- [ ] **Step 2: Run** the focused tests and confirm failure because the registry and probe methods do not exist.
-- [ ] **Step 3: Implement** a `SourceAdapter` protocol with `matches`, `probe`, `fetch_metadata`, `fetch_caption`, `acquire_audio`, and optional `acquire_video`; add a registry that preserves current public video adapters and allows source-specific adapters.
-- [ ] **Step 4: Run** focused registry tests and existing adapter tests.
-- [ ] **Step 5: Commit** as `refactor: add capability-oriented source boundary`.
+**文件：**
 
-### Task 3: Implement public Xiaoyuzhou audio source
+- 新建：`app/ingestion/sources.py`
+- 修改：`app/ingestion/adapters/base.py`
+- 修改：`app/ingestion/adapters/__init__.py`
+- 测试：`tests/test_source_registry.py`
 
-**Files:**
-- Create: `app/ingestion/adapters/xiaoyuzhou.py`
-- Modify: `app/ingestion/sources.py`
-- Test: `tests/test_xiaoyuzhou_ingestion.py`
-- Add fixture: `tests/fixtures/xiaoyuzhou_episode.html`
+- [ ] **步骤 1：先写失败测试**，覆盖按 URL 主机查找来源、来源探测返回资源类型/能力，以及不支持的操作返回类型化提取错误。
+- [ ] **步骤 2：运行聚焦测试**，确认注册表和探测接口尚不存在。
+- [ ] **步骤 3：实现** `SourceAdapter` 协议，包含 `matches`、`probe`、`fetch_metadata`、`fetch_caption`、`acquire_audio` 和可选的 `acquire_video`；注册现有视频适配器，并允许来源专属适配器加入。
+- [ ] **步骤 4：运行注册表测试和现有 Adapter 测试**。
+- [ ] **步骤 5：提交** `refactor: add capability-oriented source boundary`。
 
-- [ ] **Step 1: Add a fixture-based failing test** for the supplied episode shape: extract title, author, duration, and an HTTPS `.m4a` URL; report `resource_kind=audio`, `metadata`, `audio`, and `transcription` capabilities.
-- [ ] **Step 2: Run** `pytest -q tests/test_xiaoyuzhou_ingestion.py` and confirm the source module is missing.
-- [ ] **Step 3: Implement** public HTML/embedded-state parsing, strict HTTPS media-host validation, bounded streaming download into the task directory, and `fetch_caption()` returning `None` because no public caption endpoint is available.
-- [ ] **Step 4: Run** fixture tests and a read-only probe against `https://www.xiaoyuzhoufm.com/episode/6a5f441fa3fec224d5a10e23`; do not persist the downloaded audio.
-- [ ] **Step 5: Run** `git diff --check` and commit as `feat: support Xiaoyuzhou audio sources`.
+### 任务 3：实现公开小宇宙音频来源
 
-### Task 4: Add capability planner and migrate VideoPipeline behavior
+**文件：**
 
-**Files:**
-- Create: `app/ingestion/planner.py`
-- Modify: `app/ingestion/pipeline.py`
-- Modify: `app/ingestion/service.py`
-- Test: `tests/test_ingestion_planner.py`
-- Test: `tests/test_ingestion_pipeline.py`
+- 新建：`app/ingestion/adapters/xiaoyuzhou.py`
+- 修改：`app/ingestion/sources.py`
+- 测试：`tests/test_xiaoyuzhou_ingestion.py`
+- 新增 fixture：`tests/fixtures/xiaoyuzhou_episode.html`
 
-- [ ] **Step 1: Write failing tests** for audio-only execution, caption-first execution, optional keyframes only when the capability exists, and a clear unsupported-capability error.
-- [ ] **Step 2: Run** focused tests and confirm failure against the current video-only protocol.
-- [ ] **Step 3: Implement** a planner that requests metadata, tries captions when declared, downloads audio for ASR when needed, and only requests video/keyframes when explicitly enabled and supported. Keep temporary cleanup and `MediaExtractionError` fallback semantics.
-- [ ] **Step 4: Run** focused pipeline/planner tests and the existing media egress tests.
-- [ ] **Step 5: Commit** as `refactor: plan ingestion from source capabilities`.
+- [ ] **步骤 1：先写 fixture 测试**，使用用户提供的单集页面结构，提取标题、作者、时长和 HTTPS `.m4a` 地址，并返回 `resource_kind=audio`、`metadata`、`audio`、`transcription` 能力。
+- [ ] **步骤 2：运行** `pytest -q tests/test_xiaoyuzhou_ingestion.py`，确认来源模块尚不存在。
+- [ ] **步骤 3：实现**公开 HTML/内嵌状态解析、HTTPS 音频主机白名单、带大小限制的流式下载，以及返回 `None` 的 `fetch_caption()`；没有公开字幕接口时交给 Whisper。
+- [ ] **步骤 4：运行 fixture 测试，并对 `https://www.xiaoyuzhoufm.com/episode/6a5f441fa3fec224d5a10e23` 做只读探测；不要持久化下载音频。
+- [ ] **步骤 5：运行 `git diff --check`，提交** `feat: support Xiaoyuzhou audio sources`。
 
-### Task 5: Switch API and admin execution to source resolution plus planning
+### 任务 4：增加能力规划器并迁移现有媒体管线
 
-**Files:**
-- Modify: `app/main.py`
-- Modify: `app/admin_routes.py`
-- Modify: `app/ingestion/classifier.py`
-- Modify: `app/schemas.py`
-- Test: `tests/test_ingestion_api.py`
-- Test: `tests/test_admin.py`
+**文件：**
 
-- [ ] **Step 1: Write failing tests** asserting the supplied Xiaoyuzhou URL is classified as `source_platform=xiaoyuzhou`, `resource_kind=audio`, and queued without being labeled `video`; retain regression tests for Bilibili and ordinary Xiaohongshu article URLs.
-- [ ] **Step 2: Run** focused API/admin tests and confirm current classification cannot represent Xiaoyuzhou audio.
-- [ ] **Step 3: Implement** source resolution and probe before plan creation. Populate legacy `media_type` only at the compatibility boundary and expose `resource_kind` where schemas already permit additive fields.
-- [ ] **Step 4: Run** all API/admin tests and verify the background executor receives the planned source operation.
-- [ ] **Step 5: Commit** as `refactor: dispatch ingestion through source plans`.
+- 新建：`app/ingestion/planner.py`
+- 修改：`app/ingestion/pipeline.py`
+- 修改：`app/ingestion/service.py`
+- 测试：`tests/test_ingestion_planner.py`
+- 测试：`tests/test_ingestion_pipeline.py`
 
-### Task 6: Verify in Python 3.12 and update handoff
+- [ ] **步骤 1：先写失败测试**，覆盖纯音频执行、字幕优先、仅在声明支持且开启时抽取关键帧，以及不支持能力时返回清晰错误。
+- [ ] **步骤 2：运行聚焦测试**，确认当前视频专用协议无法满足这些场景。
+- [ ] **步骤 3：实现**规划器：声明字幕能力时先尝试字幕；需要转写时获取音频；只有明确开启且来源支持时才获取视频/关键帧。保留临时目录清理和 `MediaExtractionError` 回退行为。
+- [ ] **步骤 4：运行规划器、媒体管线和媒体出口测试**。
+- [ ] **步骤 5：提交** `refactor: plan ingestion from source capabilities`。
 
-**Files:**
-- Modify: `HANDOFF.md`
-- Modify: `docs/HANDOFF.md`
-- Test: all existing tests
+### 任务 5：将 API 和管理后台切换到来源解析与能力计划
 
-- [ ] **Step 1: Run** `python3 -m compileall -q app tests` and `git diff --check`.
-- [ ] **Step 2: Run** in the claw Python 3.12 container: `pip install -q pytest && pytest -q`.
-- [ ] **Step 3: Run** a read-only Xiaoyuzhou probe and a small public audio smoke test if the supplied file size is safe; record that no Cookie or browser automation is used.
-- [ ] **Step 4: Update** both handoff entry points with the new source/capability model, the Xiaoyuzhou route, and the exact verification result.
-- [ ] **Step 5: Commit** as `docs: update capability ingestion handoff` and push only after the user requests deployment.
+**文件：**
+
+- 修改：`app/main.py`
+- 修改：`app/admin_routes.py`
+- 修改：`app/ingestion/classifier.py`
+- 修改：`app/schemas.py`
+- 测试：`tests/test_ingestion_api.py`
+- 测试：`tests/test_admin.py`
+
+- [ ] **步骤 1：先写失败测试**，确认用户提供的小宇宙 URL 得到 `source_platform=xiaoyuzhou`、`resource_kind=audio`，排队时不标记为 `video`；同时保留 Bilibili 和普通小红书图文回归测试。
+- [ ] **步骤 2：运行 API/管理后台聚焦测试**，确认当前分类无法表达小宇宙音频。
+- [ ] **步骤 3：实现**来源解析和探测，再生成能力计划。只在兼容边界填充旧 `media_type`，在现有 schema 中以增量方式暴露 `resource_kind`。
+- [ ] **步骤 4：运行全部 API/管理后台测试，确认后台执行器收到正确的来源计划**。
+- [ ] **步骤 5：提交** `refactor: dispatch ingestion through source plans`。
+
+### 任务 6：在 Python 3.12 和 claw 上验证，并更新交接文档
+
+**文件：**
+
+- 修改：`HANDOFF.md`
+- 修改：`docs/HANDOFF.md`
+- 测试：全部现有测试
+
+- [ ] **步骤 1：运行** `python3 -m compileall -q app tests` 和 `git diff --check`。
+- [ ] **步骤 2：在 claw 的 Python 3.12 容器中运行** `pip install -q pytest && pytest -q`。
+- [ ] **步骤 3：执行只读小宇宙探测；若音频体积可控，再做小型公开音频 smoke test，并记录未使用 Cookie 或浏览器自动化**。
+- [ ] **步骤 4：更新两个 handoff 入口，记录来源/能力模型、小宇宙路径和准确验证结果**。
+- [ ] **步骤 5：提交** `docs: update capability ingestion handoff`；只有用户明确要求部署时才推送或部署。
