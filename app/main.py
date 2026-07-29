@@ -27,6 +27,7 @@ from app.schemas import (
 )
 from app.ingestion.classifier import ResourceClassifier
 from app.ingestion.article import ArticlePipeline
+from app.ingestion.input import extract_first_http_url
 from app.ingestion.adapters import default_video_adapters
 from app.ingestion.pipeline import VideoPipeline
 from app.ingestion.media import MediaEgressPolicy
@@ -121,7 +122,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
 
     @app.post("/ingestions", response_model=IngestionAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
     def create_ingestion(request: CreateIngestionRequest, session: Session = Depends(get_session)) -> IngestionAcceptedResponse:
-        descriptor = ResourceClassifier.default().classify_url(request.url)
+        descriptor = ResourceClassifier.default().classify_url(extract_first_http_url(request.url))
         job = IngestionJob(
             input_type=request.input_type,
             original_url=descriptor.original_url,

@@ -14,7 +14,7 @@ class RecordingExecutor:
         self.calls.append((function, args))
 
 
-def make_client(tmp_path: Path) -> tuple[TestClient, RecordingExecutor]:
+def make_client(tmp_path: Path, *, raise_server_exceptions: bool = True) -> tuple[TestClient, RecordingExecutor]:
     app = create_app(
         settings=Settings(
             database_url=f"sqlite:///{tmp_path / 'api.db'}",
@@ -24,7 +24,7 @@ def make_client(tmp_path: Path) -> tuple[TestClient, RecordingExecutor]:
     )
     executor = RecordingExecutor()
     app.state.ingestion_executor = executor
-    return TestClient(app), executor
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions), executor
 
 
 def test_create_ingestion_returns_accepted_job_and_queues_work(tmp_path: Path) -> None:
@@ -47,6 +47,19 @@ def test_create_ingestion_queues_xiaohongshu_article_url(tmp_path: Path) -> None
     client, executor = make_client(tmp_path)
 
     response = client.post("/ingestions", json={"url": "https://www.xiaohongshu.com/explore/66abc"})
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert len(executor.calls) == 1
+
+
+def test_create_ingestion_extracts_xiaohongshu_share_link_from_text(tmp_path: Path) -> None:
+    client, executor = make_client(tmp_path, raise_server_exceptions=False)
+
+    response = client.post(
+        "/ingestions",
+        json={"url": "北京：）个人觉得无法超越的漂亮公园 北京从来不缺好... http://xhslink.cn/o/6pkJ7jUEjdv 打开【小红书】，这篇笔记值得一看~"},
+    )
 
     assert response.status_code == 202
     assert response.json()["status"] == "queued"

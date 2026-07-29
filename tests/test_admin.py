@@ -72,6 +72,23 @@ def test_logged_in_admin_can_submit_video_url(tmp_path: Path) -> None:
     assert response.headers["location"].startswith("/admin/ingestions/ing_")
 
 
+def test_logged_in_admin_extracts_xiaohongshu_share_link_and_queues_article(tmp_path: Path) -> None:
+    client = configured_client(tmp_path, raise_server_exceptions=False)
+    executor = RecordingExecutor()
+    client.app.state.ingestion_executor = executor
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    response = client.post(
+        "/admin/ingestions/url",
+        data={"url": "北京：）个人觉得无法超越的漂亮公园 北京从来不缺好... http://xhslink.cn/o/6pkJ7jUEjdv 打开【小红书】，这篇笔记值得一看~"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/admin/ingestions/ing_")
+    assert len(executor.calls) == 1
+
+
 def test_logged_in_admin_can_submit_image(tmp_path: Path) -> None:
     client = configured_client(tmp_path, raise_server_exceptions=False)
     executor = RecordingExecutor()

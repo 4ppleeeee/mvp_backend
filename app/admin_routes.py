@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 from app.admin_auth import AdminAuthenticator
 from app.config import Settings
 from app.ingestion.classifier import ResourceClassifier
+from app.ingestion.input import extract_first_http_url
 from app.models import IngestionJob, SourceEvidence, TravelSource
 
 
@@ -64,7 +65,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
     @router.post("/ingestions/url")
     def submit_url(request: Request, url: str = Form()):
         ensure_logged_in(request)
-        descriptor = ResourceClassifier.default().classify_url(url)
+        descriptor = ResourceClassifier.default().classify_url(extract_first_http_url(url))
         with Session(request.app.state.engine) as session:
             job = IngestionJob(
                 input_type="url", original_url=descriptor.original_url, canonical_url=descriptor.canonical_url,
@@ -74,9 +75,10 @@ def create_admin_router(settings: Settings) -> APIRouter:
             session.add(job)
             session.commit()
             session.refresh(job)
-        if descriptor.media_type.value == "video":
-            request.app.state.ingestion_executor.submit(request.app.state.run_ingestion, job.job_id)
-        return RedirectResponse(f"/admin/ingestions/{job.job_id}", status_code=status.HTTP_303_SEE_OTHER)
+            job_id = job.job_id
+        if descriptor.media_type.value in {"video", "article"}:
+            request.app.state.ingestion_executor.submit(request.app.state.run_ingestion, job_id)
+        return RedirectResponse(f"/admin/ingestions/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
 
     @router.post("/ingestions/image")
     async def submit_image(request: Request, file: UploadFile = File()):
