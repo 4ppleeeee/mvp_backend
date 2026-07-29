@@ -25,7 +25,7 @@ class IngestionService:
                 stage="analyzing",
                 canonical_url=bundle.metadata.canonical_url,
                 source_platform=bundle.metadata.source_platform,
-                media_type="video",
+                media_type=bundle.transcript.media_type.value,
                 media_egress=job.media_egress,
                 failure_stage=None,
             )

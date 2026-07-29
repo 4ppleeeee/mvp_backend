@@ -14,10 +14,10 @@ def test_keyframe_extractor_composes_complete_grids_and_returns_data_urls(monkey
     def fake_run(command, **_kwargs):
         if command[0] == "ffprobe":
             return type("Completed", (), {"stdout": "5\n"})()
-        output = Path(command[-1])
+        output = Path(command[command.index("-y") + 1])
         output.parent.mkdir(parents=True, exist_ok=True)
         index = len(frame_paths)
-        Image.new("RGB", (16, 9), (index, 0, 0)).save(output, format="JPEG")
+        Image.new("RGB", (16, 9), (index * 64, 0, 0)).save(output, format="JPEG")
         frame_paths.append(output)
         return type("Completed", (), {"stdout": ""})()
 

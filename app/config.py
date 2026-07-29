@@ -25,4 +25,4 @@ class Settings(BaseSettings):
     admin_password_hash: str | None = None
     admin_session_secret: str | None = None
 
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="TRIPGUARD_")
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="TRIPGUARD_", extra="ignore")

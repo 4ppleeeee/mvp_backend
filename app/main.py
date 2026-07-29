@@ -26,6 +26,7 @@ from app.schemas import (
     SourceListResponse,
 )
 from app.ingestion.classifier import ResourceClassifier
+from app.ingestion.article import ArticlePipeline
 from app.ingestion.adapters import default_video_adapters
 from app.ingestion.pipeline import VideoPipeline
 from app.ingestion.media import MediaEgressPolicy
@@ -60,6 +61,9 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             job = session.exec(select(IngestionJob).where(IngestionJob.job_id == job_id)).one()
             if job.input_type == "image":
                 ImageIngestionService(session=session, llm_client=client).run(job_id)
+                return
+            if job.media_type == "article":
+                IngestionService(session=session, llm_client=client, pipeline=ArticlePipeline()).run(job_id)
                 return
             default_policy = MediaEgressPolicy()
             proxy_policy = MediaEgressPolicy(app_settings.media_proxy_url)
@@ -129,7 +133,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
         session.add(job)
         session.commit()
         session.refresh(job)
-        if descriptor.media_type.value != "video":
+        if descriptor.media_type.value not in {"video", "article"}:
             job.status = "failed"
             job.stage = "failed"
             job.error_code = "unsupported_media_type"

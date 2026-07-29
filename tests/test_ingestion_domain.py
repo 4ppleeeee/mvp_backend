@@ -54,6 +54,13 @@ def test_classifier_treats_unknown_http_url_as_article() -> None:
     assert descriptor.source_platform is None
 
 
+def test_classifier_identifies_xiaohongshu_as_article_source() -> None:
+    descriptor = ResourceClassifier.default().classify_url("https://www.xiaohongshu.com/explore/66abc")
+
+    assert descriptor.media_type is MediaType.ARTICLE
+    assert descriptor.source_platform == "xiaohongshu"
+
+
 def test_job_directory_removes_temporary_audio_when_it_exits(tmp_path: Path) -> None:
     with JobDirectory(tmp_path, "ing_test") as job_dir:
         (job_dir / "audio.m4a").write_bytes(b"temporary")

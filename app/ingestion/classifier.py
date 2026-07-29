@@ -1,6 +1,7 @@
 from urllib.parse import urlsplit
 
 from app.ingestion.adapters import default_video_adapters
+from app.ingestion.article import ArticleContentParser
 from app.ingestion.domain import MediaType, ResourceDescriptor
 
 
@@ -25,9 +26,10 @@ class ResourceClassifier:
                     media_type=MediaType.VIDEO,
                     source_platform=adapter.platform,
                 )
+        article_platform = ArticleContentParser.platform_for_url(normalized_url)
         return ResourceDescriptor(
             original_url=normalized_url,
             canonical_url=normalized_url,
             media_type=MediaType.ARTICLE,
-            source_platform=None,
+            source_platform=None if article_platform == "web" else article_platform,
         )

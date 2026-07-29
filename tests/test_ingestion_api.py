@@ -43,6 +43,16 @@ def test_create_ingestion_returns_accepted_job_and_queues_work(tmp_path: Path) -
     assert status.json()["stage"] == "queued"
 
 
+def test_create_ingestion_queues_xiaohongshu_article_url(tmp_path: Path) -> None:
+    client, executor = make_client(tmp_path)
+
+    response = client.post("/ingestions", json={"url": "https://www.xiaohongshu.com/explore/66abc"})
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert len(executor.calls) == 1
+
+
 def test_missing_ingestion_returns_404(tmp_path: Path) -> None:
     client, _ = make_client(tmp_path)
 
