@@ -242,3 +242,28 @@ def test_admin_can_accept_reviewed_ingestion(tmp_path: Path) -> None:
         assert session.exec(select(TravelSource)).first() is not None
         review = session.exec(select(IngestionReview).where(IngestionReview.job_id == job_id)).one()
         assert review.decision == "accept"
+
+
+def test_admin_can_accept_legacy_review_without_saved_evidence_metadata(tmp_path: Path) -> None:
+    client = configured_client(tmp_path)
+    with Session(client.app.state.engine) as session:
+        job = IngestionJob(
+            input_type="url",
+            original_url="https://youtu.be/abcdefghijk",
+            source_platform="youtube",
+            media_type="video",
+            status="succeeded",
+            stage="succeeded",
+            ingest_decision="review",
+            analysis_json={"title": "博山菜", "body_text": "博山菜探店", "destination": "淄博", "category": "eat"},
+            evidence_text="我们现在在博山吃博山菜。",
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        job_id = job.job_id
+
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+    response = client.post(f"/admin/ingestions/{job_id}/review", data={"decision": "accept"}, follow_redirects=False)
+
+    assert response.status_code == 303

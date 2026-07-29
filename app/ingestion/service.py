@@ -162,13 +162,14 @@ class IngestionService:
         job.source_id = source.source_id
 
     def _save_source_from_job(self, job: IngestionJob, analysis: SourceAnalysis) -> None:
+        evidence_metadata = job.evidence_metadata_json or {}
         source = TravelSource(
             title=analysis.title or job.original_url or "未命名资料",
             body_text=job.evidence_text or analysis.body_text or "",
             summary_text=analysis.body_text,
             original_url=job.original_url,
             source_platform=job.source_platform,
-            cover_image_url=job.evidence_metadata_json.get("thumbnail_url") if isinstance(job.evidence_metadata_json.get("thumbnail_url"), str) else None,
+            cover_image_url=evidence_metadata.get("thumbnail_url") if isinstance(evidence_metadata.get("thumbnail_url"), str) else None,
             destination=analysis.destination,
             category=analysis.category,
             location_name=analysis.location_name,
@@ -184,7 +185,7 @@ class IngestionService:
                 language=job.evidence_language,
                 full_text=job.evidence_text or "",
                 segments=job.evidence_segments,
-                metadata_json=job.evidence_metadata_json,
+                metadata_json=evidence_metadata,
             )
         )
         job.source_id = source.source_id
