@@ -98,6 +98,7 @@ def test_logged_in_admin_lists_only_saved_results(tmp_path: Path) -> None:
     assert "北京：个人觉得无法超越的漂亮公园" in response.text
     assert 'class="result-workspace"' in response.text
     assert f'href="/admin/sources?source_id={source_id}"' in response.text
+    assert f"background-image:url('/admin/sources/{source_id}/cover')" in response.text
 
 
 def test_logged_in_admin_shows_saved_result_card(tmp_path: Path) -> None:

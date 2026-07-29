@@ -1,14 +1,17 @@
 from pathlib import Path
+from urllib.parse import urljoin
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
+import requests
 
 from app.admin_auth import AdminAuthenticator
 from app.config import Settings
 from app.ingestion.classifier import ResourceClassifier
 from app.ingestion.input import extract_first_http_url
+from app.ingestion.article import SafeHtmlFetcher
 from app.models import IngestionJob, SourceEvidence, TravelSource
 
 
@@ -80,6 +83,49 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 raise HTTPException(status_code=404, detail="source not found")
             evidence = session.exec(select(SourceEvidence).where(SourceEvidence.source_id == source_id)).first()
         return templates.TemplateResponse(request, "source_detail.html", {"source": source, "evidence": evidence})
+
+    @router.get("/sources/{source_id}/cover")
+    def source_cover(request: Request, source_id: str):
+        ensure_logged_in(request)
+        with Session(request.app.state.engine) as session:
+            source = session.exec(select(TravelSource).where(TravelSource.source_id == source_id)).first()
+        if source is None or not source.cover_image_url:
+            raise HTTPException(status_code=404, detail="source cover not found")
+        current_url = source.cover_image_url
+        for _ in range(6):
+            SafeHtmlFetcher._require_public_url(current_url)
+            upstream = requests.get(
+                current_url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; TripGuard/0.1)", "Accept": "image/avif,image/webp,image/*"},
+                timeout=(10, 20),
+                allow_redirects=False,
+                stream=True,
+            )
+            try:
+                if upstream.is_redirect:
+                    location = upstream.headers.get("Location")
+                    if not location:
+                        raise HTTPException(status_code=502, detail="cover redirect is missing location")
+                    current_url = urljoin(current_url, location)
+                    continue
+                content_type = upstream.headers.get("Content-Type", "").split(";", 1)[0].lower()
+                if not 200 <= upstream.status_code < 300 or not content_type.startswith("image/"):
+                    raise HTTPException(status_code=502, detail="cover image is unavailable")
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in upstream.iter_content(64 * 1024):
+                    total += len(chunk)
+                    if total > 5 * 1024 * 1024:
+                        raise HTTPException(status_code=502, detail="cover image exceeds 5 MiB")
+                    chunks.append(chunk)
+                return Response(
+                    content=b"".join(chunks),
+                    media_type=content_type,
+                    headers={"Cache-Control": "private, max-age=300"},
+                )
+            finally:
+                upstream.close()
+        raise HTTPException(status_code=502, detail="cover redirected too many times")
 
     @router.post("/ingestions/url")
     def submit_url(request: Request, url: str = Form()):
