@@ -13,9 +13,9 @@ def default_video_adapters(
 ) -> tuple[object, ...]:
     adapters: list[object] = [
         YoutubeAdapter(media_egress_policy=media_egress_policy),
-        BilibiliAdapter(),
-        DouyinAdapter(),
-        KuaishouAdapter(),
+        BilibiliAdapter(media_egress_policy=media_egress_policy),
+        DouyinAdapter(media_egress_policy=media_egress_policy),
+        KuaishouAdapter(media_egress_policy=media_egress_policy),
     ]
     if include_xiaohongshu:
         adapters.append(XiaohongshuAdapter(media_egress_policy=media_egress_policy))

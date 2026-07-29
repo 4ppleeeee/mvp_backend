@@ -39,7 +39,7 @@ Ingestion 正在从固定的 `article/video/image` 分支迁移为“输入形�
 
 小宇宙单集使用 `media_type=audio`，不再伪装成 `video`。用户提供的单集链接已在 claw 上只读探测成功，能够提取公开音频地址、标题和时长；完整音频下载与 Whisper 需谨慎执行，因为单集可能很长。
 
-来源专属访问逻辑应封装在来源 Adapter 的访问上下文中。例如抖音 `msToken` 应属于抖音来源访问准备，不应被抽象成全局 video 能力；不得引入 Cookie 持久化、验证码或浏览器自动化。
+来源专属访问逻辑应封装在来源 Adapter 的访问上下文中。抖音已接入 BiliNote 风格的 `msToken` 准备：每次作品详情请求前由 `DouyinApiClient` 在内存中请求一次新 token，生成 `a_bogus` 后请求公开详情；token 不持久化、不写入数据库。`DouyinAdapter` 已纳入统一能力编排，并复用临时视频、FFmpeg 音频和 Whisper 链路。不得引入 Cookie 持久化、验证码或浏览器自动化。
 
 不要为了适配小上下文模型而截断或覆盖完整证据。模型只输出结构化字段和有长度上限的摘要；长文本应更换长上下文模型，或在将来做分段检索/合并，原文始终保留。
 
@@ -62,7 +62,7 @@ ssh -p 12343 aatroxli@openclaw.aatroxli.site \
    sh -lc "pip install -q pytest && pytest -q"'
 ```
 
-截至本文件更新，完整测试为 `65 passed`（存在 FastAPI/Starlette 弃用警告）。每次修改后至少运行相关测试、`git diff --check`，部署后验证 `/health`。
+截至本文件更新，claw Python 3.12 容器中的完整测试为 `87 passed, 2 warnings`（包含抖音 msToken 回归测试）。每次修改后至少运行相关测试、`git diff --check`，部署后验证 `/health`。
 
 ## 安全部署到 claw
 

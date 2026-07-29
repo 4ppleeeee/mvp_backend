@@ -59,7 +59,7 @@ capabilities = metadata + audio + transcription
 
 已对 `https://www.xiaoyuzhoufm.com/episode/6a5f441fa3fec224d5a10e23` 做只读探测，成功提取标题、时长和公开 `.m4a` 地址；没有下载完整音频或运行长时间 Whisper。
 
-来源专属访问上下文仍是扩展点。未来抖音 `msToken` 应放在抖音 Adapter 的访问上下文内，不应成为全局 video 能力；继续禁止 Cookie 持久化、验证码和浏览器自动化。
+抖音来源已接入 BiliNote 风格的来源专属访问上下文：`app/ingestion/douyin_api.py` 的 `DouyinApiClient` 在每次作品详情请求前通过 `BiliNoteMsTokenClient` 申请一次性 `msToken`，再生成 `a_bogus` 并请求详情；token 只存在单次请求内存，不落盘、不进数据库。`DouyinAdapter` 负责元数据、临时视频下载和 FFmpeg 音频提取，随后复用统一 Whisper/关键帧能力。默认来源注册表会把 primary/fallback 的媒体出口策略传给抖音客户端。继续禁止 Cookie 持久化、验证码和浏览器自动化。
 
 ## 最新关键帧媒体管线
 
@@ -159,7 +159,7 @@ tripguard-mvp-backend Up
 - `git diff --check`
 - claw 容器内真实 Python 3.12 环境下的关键帧提取、管线返回和默认关闭测试；均通过。
 - claw backend 健康检查通过。
-- claw Python 3.12 容器中本地仓库测试（排除 claw 上额外保留的 `tests/test_douyin_api.py`）为 `82 passed, 2 warnings`。
+- claw Python 3.12 容器中完整测试（含抖音 `msToken` 回归测试）为 `87 passed, 2 warnings`。
 - 关键帧代码本地与远端 SHA-256 一致。
 
 没有完成：
@@ -167,7 +167,7 @@ tripguard-mvp-backend Up
 - 真实公开视频端到端关键帧下载测试。之前选中的 YouTube 视频约 1.14 GiB，下载到约 95% 时为避免继续消耗带宽而中止。不要把这次测试描述为完整端到端成功。
 - 本地完整 pytest。原因是本地 Python 3.9 与项目 Python 3.12 目标不一致。
 
-claw 目录还保留一组没有同步回本地 Git 的抖音 `msToken` 实验文件和测试；该组测试当前有 4 个失败，原因是它依赖未纳入本地仓库的 `DouyinApiClient`/Adapter 接线。不要把这组远端额外测试的结果与本地提交混在一起，后续如继续抖音工作应先把它们安全带回 Git 并重新审查边界。
+抖音实验文件和测试已安全带回本地 Git，并完成来源 Adapter 接线；测试覆盖短链解析、HEAD 404 后继续使用最终 URL、msToken 重试且不持久化、真实视频地址选择和音频提取。
 
 如果继续验证，优先使用较小、公开、可下载的视频，并在 claw 容器内测试；不要使用 Cookie 或验证码绕过。
 
