@@ -7,7 +7,7 @@ from app.config import Settings
 from app.main import create_app
 
 
-def configured_client(tmp_path: Path) -> TestClient:
+def configured_client(tmp_path: Path, *, raise_server_exceptions: bool = True) -> TestClient:
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'admin.db'}",
         uploads_dir=str(tmp_path / "uploads"),
@@ -15,7 +15,15 @@ def configured_client(tmp_path: Path) -> TestClient:
         admin_password_hash=PasswordHash.recommended().hash("test-password"),
         admin_session_secret="test-session-secret",
     )
-    return TestClient(create_app(settings=settings))
+    return TestClient(create_app(settings=settings), raise_server_exceptions=raise_server_exceptions)
+
+
+class RecordingExecutor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, tuple[object, ...]]] = []
+
+    def submit(self, function: object, *args: object) -> None:
+        self.calls.append((function, args))
 
 
 def test_admin_redirects_unauthenticated_user_to_login(tmp_path: Path) -> None:
@@ -62,3 +70,20 @@ def test_logged_in_admin_can_submit_video_url(tmp_path: Path) -> None:
 
     assert response.status_code == 303
     assert response.headers["location"].startswith("/admin/ingestions/ing_")
+
+
+def test_logged_in_admin_can_submit_image(tmp_path: Path) -> None:
+    client = configured_client(tmp_path, raise_server_exceptions=False)
+    executor = RecordingExecutor()
+    client.app.state.ingestion_executor = executor
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    response = client.post(
+        "/admin/ingestions/image",
+        files={"file": ("note.png", b"image-bytes", "image/png")},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/admin/ingestions/ing_")
+    assert len(executor.calls) == 1

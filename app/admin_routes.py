@@ -86,13 +86,14 @@ def create_admin_router(settings: Settings) -> APIRouter:
         with Session(request.app.state.engine) as session:
             job = IngestionJob(input_type="image", media_type="image", source_platform="image")
             session.add(job); session.commit(); session.refresh(job)
-            path = Path(request.app.state.settings.ingestion_temp_dir) / job.job_id / "image.bin"
+            job_id = job.job_id
+            path = Path(request.app.state.settings.ingestion_temp_dir) / job_id / "image.bin"
             path.parent.mkdir(parents=True, exist_ok=False)
             path.write_bytes(await file.read())
             job.input_path = str(path)
             session.add(job); session.commit()
-        request.app.state.ingestion_executor.submit(request.app.state.run_ingestion, job.job_id)
-        return RedirectResponse(f"/admin/ingestions/{job.job_id}", status_code=status.HTTP_303_SEE_OTHER)
+        request.app.state.ingestion_executor.submit(request.app.state.run_ingestion, job_id)
+        return RedirectResponse(f"/admin/ingestions/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
 
     @router.get("/ingestions/{job_id}")
     def job_detail(request: Request, job_id: str):
