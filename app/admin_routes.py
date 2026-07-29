@@ -62,6 +62,23 @@ def create_admin_router(settings: Settings) -> APIRouter:
             jobs = session.exec(select(IngestionJob).order_by(IngestionJob.created_at.desc()).limit(20)).all()
         return templates.TemplateResponse(request, "dashboard.html", {"jobs": jobs})
 
+    @router.get("/sources")
+    def sources(request: Request):
+        ensure_logged_in(request)
+        with Session(request.app.state.engine) as session:
+            items = session.exec(select(TravelSource).order_by(TravelSource.created_at.desc()).limit(60)).all()
+        return templates.TemplateResponse(request, "sources.html", {"sources": items})
+
+    @router.get("/sources/{source_id}")
+    def source_detail(request: Request, source_id: str):
+        ensure_logged_in(request)
+        with Session(request.app.state.engine) as session:
+            source = session.exec(select(TravelSource).where(TravelSource.source_id == source_id)).first()
+            if source is None:
+                raise HTTPException(status_code=404, detail="source not found")
+            evidence = session.exec(select(SourceEvidence).where(SourceEvidence.source_id == source_id)).first()
+        return templates.TemplateResponse(request, "source_detail.html", {"source": source, "evidence": evidence})
+
     @router.post("/ingestions/url")
     def submit_url(request: Request, url: str = Form()):
         ensure_logged_in(request)

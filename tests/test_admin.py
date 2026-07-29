@@ -2,9 +2,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 from pwdlib import PasswordHash
+from sqlmodel import Session
 
 from app.config import Settings
 from app.main import create_app
+from app.models import TravelSource
 
 
 def configured_client(tmp_path: Path, *, raise_server_exceptions: bool = True) -> TestClient:
@@ -24,6 +26,26 @@ class RecordingExecutor:
 
     def submit(self, function: object, *args: object) -> None:
         self.calls.append((function, args))
+
+
+def create_saved_source(client: TestClient) -> str:
+    with Session(client.app.state.engine) as session:
+        source = TravelSource(
+            title="北京：个人觉得无法超越的漂亮公园",
+            body_text="一份北京公园漫游的私藏清单。",
+            original_url="https://xhslink.cn/o/example",
+            source_platform="xiaohongshu",
+            cover_image_url="https://img.example/cover.jpg",
+            destination="北京",
+            category="guide",
+            location_name="城市公园",
+            normalized_tags=["拍照好看", "亲子"],
+            raw_tags=["散步"],
+        )
+        session.add(source)
+        session.commit()
+        session.refresh(source)
+        return source.source_id
 
 
 def test_admin_redirects_unauthenticated_user_to_login(tmp_path: Path) -> None:
@@ -60,6 +82,40 @@ def test_logged_in_admin_dashboard_exposes_url_and_image_submission(tmp_path: Pa
     assert response.status_code == 200
     assert 'action="/admin/ingestions/url"' in response.text
     assert 'action="/admin/ingestions/image"' in response.text
+    assert 'href="/admin/sources"' in response.text
+
+
+def test_logged_in_admin_lists_only_saved_results(tmp_path: Path) -> None:
+    client = configured_client(tmp_path)
+    source_id = create_saved_source(client)
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    response = client.get("/admin/sources")
+
+    assert response.status_code == 200
+    assert "解析结果" in response.text
+    assert "北京：个人觉得无法超越的漂亮公园" in response.text
+    assert f'href="/admin/sources/{source_id}"' in response.text
+
+
+def test_logged_in_admin_shows_saved_result_card(tmp_path: Path) -> None:
+    client = configured_client(tmp_path)
+    source_id = create_saved_source(client)
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    response = client.get(f"/admin/sources/{source_id}")
+
+    assert response.status_code == 200
+    assert "北京：个人觉得无法超越的漂亮公园" in response.text
+    assert "拍照好看" in response.text
+
+
+def test_admin_login_uses_the_refreshed_visual_shell(tmp_path: Path) -> None:
+    response = configured_client(tmp_path).get("/admin/login")
+
+    assert response.status_code == 200
+    assert 'class="login-shell"' in response.text
+    assert 'href="/static/admin.css"' in response.text
 
 
 def test_logged_in_admin_can_submit_video_url(tmp_path: Path) -> None:
