@@ -122,6 +122,14 @@ def test_admin_login_uses_the_refreshed_visual_shell(tmp_path: Path) -> None:
     assert 'class="login-artwork"' in response.text
 
 
+def test_admin_styles_define_all_workspace_shells() -> None:
+    stylesheet = (Path(__file__).parents[1] / "app" / "static" / "admin.css").read_text()
+
+    assert ".login-shell" in stylesheet
+    assert ".task-workspace" in stylesheet
+    assert ".result-workspace" in stylesheet
+
+
 def test_logged_in_admin_can_submit_video_url(tmp_path: Path) -> None:
     client = configured_client(tmp_path)
     client.post("/admin/login", data={"username": "admin", "password": "test-password"})
