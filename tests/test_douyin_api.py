@@ -8,12 +8,22 @@ from app.ingestion.media import MediaEgressPolicy
 
 
 class FakeResponse:
-    def __init__(self, *, url: str = "", json_data: dict | None = None, content: bytes = b"") -> None:
+    def __init__(
+        self,
+        *,
+        url: str = "",
+        json_data: dict | None = None,
+        content: bytes = b"",
+        status_error: Exception | None = None,
+    ) -> None:
         self.url = url
         self._json_data = json_data or {}
         self.content = content
+        self._status_error = status_error
 
     def raise_for_status(self) -> None:
+        if self._status_error:
+            raise self._status_error
         return None
 
     def json(self) -> dict:
@@ -24,14 +34,18 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, detail: dict) -> None:
+    def __init__(self, detail: dict, *, head_status_error: Exception | None = None) -> None:
         self.detail = detail
+        self.head_status_error = head_status_error
         self.proxies: dict[str, str] = {}
         self.calls: list[tuple[str, str, dict]] = []
 
     def head(self, url: str, **kwargs) -> FakeResponse:
         self.calls.append(("HEAD", url, kwargs))
-        return FakeResponse(url="https://www.douyin.com/video/7351234567890123456")
+        return FakeResponse(
+            url="https://www.douyin.com/video/7351234567890123456",
+            status_error=self.head_status_error,
+        )
 
     def get(self, url: str, **kwargs) -> FakeResponse:
         self.calls.append(("GET", url, kwargs))
@@ -93,6 +107,20 @@ def test_douyin_client_resolves_short_link_and_uses_actual_video_not_background_
     assert media.video_url != _detail()["aweme_detail"]["music"]["play_url"]["uri"]
     assert session.calls[0][0] == "HEAD"
     assert "a_bogus=signed-value" in session.calls[1][1]
+
+
+def test_douyin_client_uses_the_final_short_link_url_even_when_head_returns_404() -> None:
+    from app.ingestion.douyin_api import DouyinApiClient
+
+    client = DouyinApiClient(
+        session=FakeSession(_detail(), head_status_error=RuntimeError("404")),
+        token_client=FakeTokenClient(["x" * 120]),
+        signer=StaticSigner(),
+    )
+
+    media = client.fetch_media("https://v.douyin.com/9DLOqEFBaMM/")
+
+    assert media.aweme_id == "7351234567890123456"
 
 
 def test_douyin_client_retries_transient_ms_token_failures_without_storing_token() -> None:

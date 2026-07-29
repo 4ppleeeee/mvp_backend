@@ -186,7 +186,8 @@ class DouyinApiClient:
         resolved = url
         if parsed.hostname and parsed.hostname.lower() == "v.douyin.com":
             response = self._session.head(url, allow_redirects=True, headers=_DETAIL_HEADERS, timeout=20)
-            response.raise_for_status()
+            # BiliNote deliberately uses the final redirect URL even when the
+            # HEAD endpoint returns a non-2xx status after resolving it.
             resolved = response.url
         for component in urlsplit(resolved).path.split("/"):
             if component.isdigit() and len(component) >= 10:
