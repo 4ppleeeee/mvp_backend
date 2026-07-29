@@ -1,10 +1,18 @@
 from pathlib import Path
+import hashlib
 
 import pytest
 
 from app.ingestion.adapters.douyin import DouyinAdapter
 from app.ingestion.domain import MediaMetadata
 from app.ingestion.media import MediaEgressPolicy
+
+
+def test_douyin_ms_token_payload_matches_bilinote_protocol_data() -> None:
+    from app.ingestion.douyin_api import _MS_TOKEN_STR_DATA
+
+    assert len(_MS_TOKEN_STR_DATA) == 4036
+    assert hashlib.sha256(_MS_TOKEN_STR_DATA.encode()).hexdigest() == "40f1898d8afe3388c257341c006557fb8c2723f0a4b7b7556964f268838823a3"
 
 
 class FakeResponse:

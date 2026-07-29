@@ -19,6 +19,8 @@
 
 后端是 FastAPI + SQLModel/SQLite 服务，支持链接、公开网页、小红书公开 H5、图片和视频的异步 Ingestion。视频获取/转写沿用 BiliNote 风格：先取公开字幕或自动字幕，失败后用 yt-dlp 获取临时音频并由 faster-whisper 转写；临时音频、视频、关键帧均不持久化。
 
+抖音使用 BiliNote 对齐的专用媒体获取链路：短链 `HEAD` 取最终 `aweme_id`（即使最终 HEAD 为非 2xx 仍使用其 URL）、在一次请求内获取 mssdk 的 `msToken`、用 `a_bogus` 请求公开详情，再下载 `video.download_addr`（没有时回退 `play_addr`）到任务临时目录，经 FFmpeg/Whisper 转写。不得误用 `music.play_url`，它是背景音乐；不得持久化或记录 `msToken`。`app/ingestion/douyin_abogus.py` 保留完整上游 GPLv3 归属，分发时必须遵守其文件头和 `THIRD_PARTY_NOTICES.md`。
+
 小红书链接初始按公开文章抓取，避免把图文笔记错误交给 yt-dlp。异步任务会读取公开页面 HTML；发现 `<video>`、公开 `.mp4`/`.m3u8` 或视频字段标记后，才切换到视频管线。小红书没有受支持的公开字幕接口，因此视频使用临时音频 + Whisper 转写。
 
 视频、文章和图片的已入库资料必须遵守以下边界：
@@ -50,7 +52,7 @@ ssh -p 12343 aatroxli@openclaw.aatroxli.site \
    sh -lc "pip install -q pytest && pytest -q"'
 ```
 
-截至本文件更新，完整测试为 `72 passed`（存在 FastAPI/Starlette 弃用警告）。每次修改后至少运行相关测试、`git diff --check`，部署后验证 `/health`。
+截至本文件更新，完整测试为 `76 passed`（存在 FastAPI/Starlette 弃用警告）。每次修改后至少运行相关测试、`git diff --check`，部署后验证 `/health`。
 
 ## 安全部署到 claw
 
