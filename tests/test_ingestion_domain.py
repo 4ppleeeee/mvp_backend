@@ -75,6 +75,21 @@ def test_xiaohongshu_video_adapter_falls_back_when_public_caption_is_unavailable
     assert XiaohongshuAdapter().fetch_caption("https://www.xiaohongshu.com/discovery/item/6a6247f0000000000f033570") is None
 
 
+@pytest.mark.parametrize(
+    ("adapter_path", "url"),
+    [
+        ("app.ingestion.adapters.douyin.DouyinAdapter", "https://v.douyin.com/9DLOqEFBaMM/"),
+        ("app.ingestion.adapters.kuaishou.KuaishouAdapter", "https://v.kuaishou.com/example"),
+    ],
+)
+def test_captionless_video_adapters_fall_back_to_whisper(adapter_path: str, url: str) -> None:
+    module_path, class_name = adapter_path.rsplit(".", 1)
+    module = __import__(module_path, fromlist=[class_name])
+    adapter = getattr(module, class_name)()
+
+    assert adapter.fetch_caption(url) is None
+
+
 def test_job_directory_removes_temporary_audio_when_it_exits(tmp_path: Path) -> None:
     with JobDirectory(tmp_path, "ing_test") as job_dir:
         (job_dir / "audio.m4a").write_bytes(b"temporary")

@@ -2,7 +2,7 @@ from abc import ABC
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from app.ingestion.domain import MediaMetadata, TemporaryAudio
+from app.ingestion.domain import MediaMetadata, TemporaryAudio, Transcript
 from app.ingestion.media import BiliNoteYtDlpAcquirer, MediaEgressPolicy
 
 
@@ -21,6 +21,10 @@ class BaseVideoAdapter(ABC):
 
     def normalize(self, url: str) -> str:
         return url
+
+    def fetch_caption(self, _: str) -> Transcript | None:
+        """Return no caption when a platform has no supported public caption API."""
+        return None
 
     def fetch_metadata(self, url: str) -> MediaMetadata:
         return BiliNoteYtDlpAcquirer(self._media_egress_policy).download(

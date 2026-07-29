@@ -50,7 +50,7 @@ ssh -p 12343 aatroxli@openclaw.aatroxli.site \
    sh -lc "pip install -q pytest && pytest -q"'
 ```
 
-截至本文件更新，完整测试为 `70 passed`（存在 FastAPI/Starlette 弃用警告）。每次修改后至少运行相关测试、`git diff --check`，部署后验证 `/health`。
+截至本文件更新，完整测试为 `72 passed`（存在 FastAPI/Starlette 弃用警告）。每次修改后至少运行相关测试、`git diff --check`，部署后验证 `/health`。
 
 ## 安全部署到 claw
 
