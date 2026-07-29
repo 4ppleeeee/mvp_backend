@@ -21,6 +21,11 @@ class MediaEgressPolicy:
     def route(self) -> str:
         return "configured_proxy" if self._proxy_url else "router_default"
 
+    @property
+    def proxy_url(self) -> str | None:
+        """Optional proxy used by all outbound media protocols."""
+        return self._proxy_url
+
     def yt_dlp_options(self) -> dict[str, object]:
         options: dict[str, object] = {
             "js_runtimes": {"node": {}},
