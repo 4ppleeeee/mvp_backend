@@ -56,6 +56,10 @@ class IngestionJob(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    media_egress: str | None = None
+    failure_stage: str | None = None
+    analysis_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
+    evidence_text: str | None = None
 
 
 class SourceEvidence(SQLModel, table=True):

@@ -10,6 +10,36 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.ingestion.domain import MediaMetadata, TemporaryAudio
+from app.ingestion.domain import MediaExtractionError
+
+
+class MediaEgressPolicy:
+    def __init__(self, proxy_url: str | None = None) -> None:
+        self._proxy_url = proxy_url.strip() if proxy_url and proxy_url.strip() else None
+
+    @property
+    def route(self) -> str:
+        return "configured_proxy" if self._proxy_url else "router_default"
+
+    def yt_dlp_options(self) -> dict[str, object]:
+        options: dict[str, object] = {
+            "js_runtimes": {"node": {}},
+            "remote_components": ["ejs:github"],
+            "retries": 2,
+            "fragment_retries": 2,
+            "extractor_retries": 2,
+        }
+        if self._proxy_url:
+            options["proxy"] = self._proxy_url
+        return options
+
+    def transcript_session(self):
+        import requests
+
+        session = requests.Session()
+        if self._proxy_url:
+            session.proxies.update({"http": self._proxy_url, "https": self._proxy_url})
+        return session
 
 
 class JobDirectory(AbstractContextManager[Path]):
@@ -35,7 +65,10 @@ class BiliNoteMediaResult:
 class BiliNoteYtDlpAcquirer:
     """BiliNote YoutubeDownloader.download adapted to TripGuard values."""
 
-    def download(self, video_url: str, output_dir: Path, *, platform: str, skip_download: bool = False) -> BiliNoteMediaResult:
+    def __init__(self, policy: MediaEgressPolicy | None = None) -> None:
+        self._policy = policy or MediaEgressPolicy()
+
+    def download(self, video_url: str, output_dir: Path, *, platform: str, skip_download: bool = False, phase: str = "audio") -> BiliNoteMediaResult:
         import yt_dlp
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -44,13 +77,17 @@ class BiliNoteYtDlpAcquirer:
             "format": "bestaudio[ext=m4a]/bestaudio/best",
             "outtmpl": output_path,
             "noplaylist": True,
-            "quiet": False,
+            "quiet": True,
         }
+        ydl_opts.update(self._policy.yt_dlp_options())
         if skip_download:
             ydl_opts["skip_download"] = True
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=not skip_download)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=not skip_download)
+        except Exception as exc:
+            raise MediaExtractionError(phase, self._policy.route, str(exc), retryable=True) from exc
 
         video_id = str(info["id"])
         extension = str(info.get("ext", "m4a"))
@@ -66,6 +103,33 @@ class BiliNoteYtDlpAcquirer:
         )
         audio = None if skip_download else TemporaryAudio(path=str(audio_path), duration_seconds=metadata.duration_seconds)
         return BiliNoteMediaResult(audio=audio, metadata=metadata)
+
+    def download_video(self, video_url: str, output_dir: Path, *, platform: str) -> Path:
+        import yt_dlp
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(output_dir / "%(id)s.%(ext)s")
+        ydl_opts: dict[str, object] = {
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
+            "outtmpl": output_path,
+            "noplaylist": True,
+            "quiet": True,
+        }
+        ydl_opts.update(self._policy.yt_dlp_options())
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=True)
+        except Exception as exc:
+            raise MediaExtractionError("video", self._policy.route, str(exc), retryable=True) from exc
+
+        video_id = str(info["id"])
+        extension = str(info.get("ext", "mp4"))
+        candidates = (output_dir / f"{video_id}.mp4", output_dir / f"{video_id}.{extension}")
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        raise MediaExtractionError("video", self._policy.route, "video download produced no file", retryable=True)
 
 
 class BiliNoteFfmpegAudioExtractor:

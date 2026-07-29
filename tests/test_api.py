@@ -432,3 +432,46 @@ def test_ollama_client_uses_native_chat_and_disables_thinking(monkeypatch, tmp_p
             "num_predict": 220,
         },
     }
+
+
+def test_ollama_client_retries_invalid_json_and_returns_parsed_object(monkeypatch, tmp_path: Path) -> None:
+    responses = iter([
+        '{"title": "截断',
+        '{"title": "重试成功"}',
+    ])
+    captured_contents: list[str] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"message": {"content": next(responses)}}
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, url: str, json: dict) -> FakeResponse:
+            captured_contents.append(json["messages"][-1]["content"])
+            return FakeResponse()
+
+    monkeypatch.setattr("app.llm.httpx.AsyncClient", FakeAsyncClient)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'tripguard-test.db'}",
+        uploads_dir=str(tmp_path / "uploads"),
+        llm_base_url="http://127.0.0.1:11434",
+        llm_model="gemma4:latest",
+    )
+
+    result = asyncio.run(OllamaLlmClient(settings)._chat_json("输出 JSON"))
+
+    assert result == {"title": "重试成功"}
+    assert len(captured_contents) == 2
+    assert "只输出一个完整、合法且可解析的 JSON 对象" in captured_contents[1]

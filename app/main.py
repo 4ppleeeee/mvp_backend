@@ -28,6 +28,7 @@ from app.schemas import (
 from app.ingestion.classifier import ResourceClassifier
 from app.ingestion.adapters import default_video_adapters
 from app.ingestion.pipeline import VideoPipeline
+from app.ingestion.media import MediaEgressPolicy
 from app.ingestion.service import IngestionService
 from app.ingestion.transcriber import BiliNoteWhisperTranscriber
 from app.ingestion.image_service import ImageIngestionService
@@ -60,17 +61,41 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             if job.input_type == "image":
                 ImageIngestionService(session=session, llm_client=client).run(job_id)
                 return
-            adapter = next(adapter for adapter in default_video_adapters() if adapter.platform == job.source_platform)
+            default_policy = MediaEgressPolicy()
+            proxy_policy = MediaEgressPolicy(app_settings.media_proxy_url)
+            primary_adapter = next(adapter for adapter in default_video_adapters(default_policy) if adapter.platform == job.source_platform)
             pipeline = VideoPipeline(
-                adapter=adapter,
+                adapter=primary_adapter,
                 transcriber=BiliNoteWhisperTranscriber(
                     model_size=app_settings.whisper_model,
                     device=app_settings.whisper_device,
                     compute_type=app_settings.whisper_compute_type,
                 ),
                 temp_root=Path(app_settings.ingestion_temp_dir),
+                keyframe_enabled=app_settings.video_keyframes_enabled,
+                frame_interval_seconds=app_settings.video_frame_interval_seconds,
+                grid_size=(app_settings.video_grid_columns, app_settings.video_grid_rows),
             )
-            IngestionService(session=session, llm_client=client, pipeline=pipeline).run(job_id)
+            fallback_pipeline = None
+            if app_settings.media_proxy_url:
+                fallback_adapter = next(
+                    adapter for adapter in default_video_adapters(proxy_policy) if adapter.platform == job.source_platform
+                )
+                fallback_pipeline = VideoPipeline(
+                    adapter=fallback_adapter,
+                    transcriber=BiliNoteWhisperTranscriber(
+                        model_size=app_settings.whisper_model,
+                        device=app_settings.whisper_device,
+                        compute_type=app_settings.whisper_compute_type,
+                    ),
+                    temp_root=Path(app_settings.ingestion_temp_dir),
+                    keyframe_enabled=app_settings.video_keyframes_enabled,
+                    frame_interval_seconds=app_settings.video_frame_interval_seconds,
+                    grid_size=(app_settings.video_grid_columns, app_settings.video_grid_rows),
+                )
+            IngestionService(
+                session=session, llm_client=client, pipeline=pipeline, fallback_pipeline=fallback_pipeline
+            ).run(job_id)
 
     app.state.run_ingestion = run_ingestion
 
@@ -128,6 +153,8 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             source_id=job.source_id,
             error_code=job.error_code,
             error_message=job.error_message,
+            media_egress=job.media_egress,
+            failure_stage=job.failure_stage,
         )
 
     @app.post("/ingestions/image", response_model=IngestionAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)

@@ -79,6 +79,7 @@ class TemporaryAudio:
 class EvidenceBundle:
     metadata: MediaMetadata
     transcript: Transcript
+    keyframe_images: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -87,3 +88,26 @@ class ResourceDescriptor:
     canonical_url: str
     media_type: MediaType
     source_platform: str | None
+
+
+class MediaExtractionError(RuntimeError):
+    """A safe, routable failure from caption, metadata, or audio extraction."""
+
+    def __init__(self, phase: str, route: str, message: str, retryable: bool = False) -> None:
+        self.phase = phase if phase in {"caption", "metadata", "audio", "video", "keyframe"} else "metadata"
+        self.route = route if route in {"router_default", "configured_proxy"} else "router_default"
+        self.retryable = retryable
+        self.safe_message = _sanitize_media_error(message)
+        super().__init__(self.safe_message)
+
+
+def _sanitize_media_error(message: str) -> str:
+    text = " ".join(str(message).split())
+    for token in ("http://", "https://"):
+        while token in text:
+            start = text.rfind(" ", 0, text.index(token)) + 1
+            end = text.find(" ", text.index(token))
+            if end < 0:
+                end = len(text)
+            text = text[:start] + "[redacted-url]" + text[end:]
+    return text[:500]

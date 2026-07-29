@@ -45,6 +45,11 @@ class TravelQuery(BaseModel):
 
 
 class OllamaLlmClient:
+    _JSON_RETRY_INSTRUCTION = (
+        "\n\n上一次响应不是合法 JSON。请重新生成，只输出一个完整、合法且可解析的 JSON 对象，"
+        "不要截断，不要 Markdown，不要任何额外文字。"
+    )
+
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
@@ -122,10 +127,19 @@ class OllamaLlmClient:
             },
         }
         async with httpx.AsyncClient(timeout=self._settings.request_timeout_seconds) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            text = response.json()["message"]["content"]
-        return json.loads(_extract_json_object(text))
+            for attempt in range(2):
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                text = response.json()["message"]["content"]
+                try:
+                    return json.loads(_extract_json_object(text))
+                except json.JSONDecodeError:
+                    if attempt == 1:
+                        return {}
+                    retry_message = dict(user_message)
+                    retry_message["content"] = content + self._JSON_RETRY_INSTRUCTION
+                    payload["messages"][-1] = retry_message
+        return {}
 
 
 def normalize_analysis(analysis: SourceAnalysis) -> SourceAnalysis:

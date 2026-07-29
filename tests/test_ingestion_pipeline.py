@@ -3,8 +3,9 @@ from pathlib import Path
 
 from app.ingestion.adapters.bilibili import BilibiliAdapter
 from app.ingestion.adapters.youtube import YoutubeAdapter
-from app.ingestion.domain import EvidenceOrigin, MediaMetadata, TemporaryAudio, Transcript, TranscriptSegment
+from app.ingestion.domain import EvidenceOrigin, EvidenceBundle, MediaMetadata, TemporaryAudio, Transcript, TranscriptSegment
 from app.ingestion.pipeline import VideoPipeline
+from youtube_transcript_api._transcripts import FetchedTranscriptSnippet
 
 
 @dataclass
@@ -47,6 +48,27 @@ def test_youtube_adapter_prefers_bilinote_manual_caption_order() -> None:
     assert transcript.full_text == "人工字幕"
 
 
+def test_youtube_adapter_accepts_current_transcript_snippet_objects() -> None:
+    class ObjectTrack(FakeYoutubeTrack):
+        def fetch(self):
+            return [FetchedTranscriptSnippet(text="对象字幕", start=1.5, duration=2.0)]
+
+    class ObjectTranscriptList(FakeYoutubeTranscriptList):
+        def find_manually_created_transcript(self, _: list[str]) -> ObjectTrack:
+            return ObjectTrack("zh-Hans", "Chinese", False, [])
+
+    class ObjectClient:
+        def list(self, _: str) -> ObjectTranscriptList:
+            return ObjectTranscriptList()
+
+    transcript = YoutubeAdapter(caption_client=ObjectClient()).fetch_caption("https://youtu.be/abcdefghijk")
+
+    assert transcript is not None
+    assert transcript.full_text == "对象字幕"
+    assert transcript.segments[0].start_seconds == 1.5
+    assert transcript.segments[0].end_seconds == 3.5
+
+
 class FakeBilibiliClient:
     def fetch_tracks(self, _: str, __: int | None) -> list[dict[str, object]]:
         return [
@@ -84,6 +106,11 @@ class FakeAdapter:
         path = job_dir / "audio.m4a"
         path.write_bytes(b"audio")
         return TemporaryAudio(path=str(path))
+
+    def acquire_video(self, _: str, job_dir: Path) -> Path:
+        path = job_dir / "video.mp4"
+        path.write_bytes(b"video")
+        return path
 
 
 class FakeTranscriber:
@@ -140,3 +167,48 @@ def test_video_pipeline_keeps_public_caption_when_metadata_is_restricted(tmp_pat
 
     assert result.transcript.full_text == "公开视频字幕"
     assert result.metadata.title == "https://youtu.be/abcdefghijk"
+
+
+def test_video_pipeline_returns_keyframe_images_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    caption = Transcript(
+        language="zh",
+        origin=EvidenceOrigin.PLATFORM_CAPTION,
+        full_text="平台字幕",
+        segments=(TranscriptSegment(start_seconds=0, end_seconds=1, text="平台字幕"),),
+    )
+    expected = ("data:image/jpeg;base64,ZmFrZQ==",)
+    monkeypatch.setattr("app.ingestion.pipeline.extract_keyframe_images", lambda *_args, **_kwargs: expected)
+
+    result = VideoPipeline(
+        adapter=FakeAdapter(caption),
+        transcriber=FakeTranscriber(),
+        temp_root=tmp_path,
+        keyframe_enabled=True,
+    ).extract("https://youtu.be/abcdefghijk", "ing_keyframes")
+
+    assert result.keyframe_images == expected
+    assert not (tmp_path / "ing_keyframes").exists()
+
+
+def test_video_pipeline_does_not_download_video_when_keyframes_disabled(monkeypatch, tmp_path: Path) -> None:
+    caption = Transcript(
+        language="zh",
+        origin=EvidenceOrigin.PLATFORM_CAPTION,
+        full_text="平台字幕",
+        segments=(TranscriptSegment(start_seconds=0, end_seconds=1, text="平台字幕"),),
+    )
+    called = False
+
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("video download must stay disabled")
+
+    monkeypatch.setattr(FakeAdapter, "acquire_video", fail_if_called)
+
+    result = VideoPipeline(adapter=FakeAdapter(caption), transcriber=FakeTranscriber(), temp_root=tmp_path).extract(
+        "https://youtu.be/abcdefghijk", "ing_no_keyframes"
+    )
+
+    assert result.keyframe_images == ()
+    assert called is False

@@ -9,7 +9,7 @@ COPY pyproject.toml ./
 COPY app ./app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ffmpeg \
+    && apt-get install --no-install-recommends -y ffmpeg nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir .
 

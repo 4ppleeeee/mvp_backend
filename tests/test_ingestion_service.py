@@ -55,3 +55,5 @@ def test_ingestion_service_saves_source_and_timestamped_evidence(tmp_path: Path)
         assert source.title == "东京咖啡路线"
         assert evidence.full_text == "表参道咖啡路线"
         assert evidence.segments == [{"start_seconds": 0, "end_seconds": 2, "text": "表参道咖啡路线"}]
+        assert result.evidence_text == "表参道咖啡路线"
+        assert result.analysis_json["destination"] == "东京"

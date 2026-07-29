@@ -79,6 +79,8 @@ class IngestionStatusResponse(BaseModel):
     source_id: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    media_egress: str | None = None
+    failure_stage: str | None = None
 
 
 class AnalyzeImageRequest(BaseModel):

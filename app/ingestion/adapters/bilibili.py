@@ -62,6 +62,7 @@ class BilibiliAdapter(BaseVideoAdapter):
     hosts = frozenset({"bilibili.com", "www.bilibili.com", "b23.tv"})
 
     def __init__(self, *, caption_client: BilibiliCaptionClient | None = None) -> None:
+        super().__init__()
         self._caption_client = caption_client
 
     def fetch_caption(self, video_url: str) -> Transcript | None:

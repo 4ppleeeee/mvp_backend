@@ -13,9 +13,14 @@ class Settings(BaseSettings):
     ingestion_temp_dir: str = "./ingestion-tmp"
     ingestion_max_attempts: int = 2
     ingestion_max_upload_bytes: int = 512 * 1024 * 1024
+    media_proxy_url: str | None = None
     whisper_model: str = "base"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
+    video_keyframes_enabled: bool = False
+    video_frame_interval_seconds: int = 6
+    video_grid_rows: int = 2
+    video_grid_columns: int = 2
     admin_username: str | None = None
     admin_password_hash: str | None = None
     admin_session_secret: str | None = None
