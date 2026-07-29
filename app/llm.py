@@ -62,7 +62,8 @@ class OllamaLlmClient:
             "category 只能从 eat, drink, play, entertainment, stay, transport, unknown 中选择；公园、景点、citywalk、路线、拍照打卡、展览、寺庙、博物馆归为 play。"
             f"normalized_tags 只能从这个列表选择：{sorted(STANDARD_TAGS)}。"
             "raw_tags 放模型生成的有价值标签，比如菜系、口味、玩法、商圈、人群、季节。"
-            "title 使用输入 title 原文；body_text 使用输入 body_text 原文。"
+            "title 使用输入 title 原文；body_text 用不超过 600 个中文字符的旅行资料摘要，"
+            "保留目的地、地点、交通、路线、时间、预约、避坑和推荐理由等可用于后续推荐的关键信息，不要逐字复述原文。"
             "\n\n"
             f"title: {title}\nurl: {url or ''}\nsource_platform: {source_platform or ''}\nbody_text: {body_text}"
         )

@@ -134,6 +134,35 @@ def test_analyze_source_returns_card_metadata_without_saving(tmp_path: Path) -> 
     assert client.get("/sources").json()["items"] == []
 
 
+def test_analyze_source_requests_a_bounded_summary_instead_of_echoing_long_transcript(tmp_path: Path, monkeypatch) -> None:
+    client = OllamaLlmClient(Settings(database_url=f"sqlite:///{tmp_path / 'tripguard-test.db'}"))
+    captured: dict[str, str] = {}
+
+    async def fake_chat_json(content: str, *, images: list[str] | None = None) -> dict[str, object]:
+        captured["content"] = content
+        return {
+            "is_travel_related": True,
+            "destination": "京都",
+            "category": "play",
+            "body_text": "伏见稻荷大社的交通与游玩建议。",
+        }
+
+    monkeypatch.setattr(client, "_chat_json", fake_chat_json)
+
+    analysis = asyncio.run(
+        client.analyze_source(
+            title="京都伏见稻荷大社攻略",
+            body_text="交通与游玩建议。" * 1000,
+            url="https://www.youtube.com/watch?v=OKFijPl39bY",
+            source_platform="youtube",
+        )
+    )
+
+    assert analysis.is_travel_related is True
+    assert "body_text 使用输入 body_text 原文" not in captured["content"]
+    assert "body_text 用不超过 600 个中文字符的旅行资料摘要" in captured["content"]
+
+
 def test_analyze_image_returns_ocr_card_metadata_without_saving(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
