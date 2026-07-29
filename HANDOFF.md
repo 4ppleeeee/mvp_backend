@@ -10,7 +10,7 @@
 - 项目：TripGuard MVP backend
 - 技术栈：FastAPI、SQLModel/SQLite、Pydantic v2、yt-dlp、youtube-transcript-api、faster-whisper、FFmpeg、Pillow
 - 本地 Python 是 3.9；项目目标运行时是 Python 3.12，完整测试应优先在 Docker 容器中执行。
-- 当前工作区有尚未提交的实现修改，这是有意保留的，不要用 `git reset --hard` 或 `git checkout --` 覆盖。
+- 本轮实现修改已提交并推送到 `origin/master`；开始新工作前仍需先检查 `git status --short`，不要用 `git reset --hard` 或 `git checkout --` 覆盖用户改动。
 
 ## 已完成的主要能力
 
@@ -27,6 +27,16 @@
 - 显式重试与 primary/fallback 媒体出口；
 - `MediaExtractionError`，区分 caption、metadata、audio、video、keyframe 阶段；
 - 不接入 Cookie、验证码、浏览器自动化或验证绕过。
+
+## 小红书视频分流
+
+小红书初始仍按 `article` 分类，避免普通图文被误判为视频。异步 Ingestion 执行时，`ArticleContentParser` 会读取公开页面 HTML；如果发现 `<video>`、公开 `.mp4`/`.m3u8` 或视频字段标记，则将任务切换为 `video`，再进入现有 `VideoPipeline`。
+
+- `app/ingestion/adapters/xiaohongshu.py`：公开小红书视频 Adapter，复用 yt-dlp 的元数据、音频和完整视频下载；没有受支持的公开字幕接口时返回 `None`，由管线继续走 Whisper。
+- `app/ingestion/adapters/__init__.py`：小红书 Adapter 仅在视频管线构建时显式加入，普通小红书文章流程不变。
+- `app/main.py`：后台执行阶段完成小红书视频探测，并将 Adapter 注入 primary/fallback 视频管线。
+
+本轮曾发现并修复两个问题：后台探测缺少 `ArticleContentParser` 导入，以及小红书 Adapter 缺少 `fetch_caption()` 协议方法。修复前创建并卡住的旧任务不会自动重试，需要重新提交。
 
 ## 最新关键帧媒体管线
 
@@ -114,6 +124,10 @@ tripguard-mvp-backend Up
 
 已保护的远端文件/目录：`.env`、数据库、`uploads`、`data`、`ingestion-tmp`。不要删除或重置它们。
 
+## Docker 构建说明
+
+`docker compose restart backend` 只重启现有容器，不会重新下载依赖。部署源码后执行 `docker compose build backend` 时，当前 Dockerfile 会在复制 `app` 后运行 `pip install --no-cache-dir .`；代码变化会使该层失效，而 `--no-cache-dir` 又不保留 pip 下载缓存，因此会再次下载依赖。后续如需缩短部署时间，应单独优化 Dockerfile 的依赖缓存层；不要把“重启”与“重建镜像”混为一谈。
+
 ## 验证情况
 
 已完成：
@@ -143,7 +157,7 @@ tripguard-mvp-backend Up
 fd0166d fix: submit authenticated admin jobs
 ```
 
-当前未提交修改主要是关键帧实现及此前的媒体出口、后台和 Ingestion 改动。开始新工作前先查看：
+最近提交还包括小红书视频识别/视频 Adapter、字幕缺失时的 Whisper 回退、后台导入修复、管理后台布局修复及对应测试。开始新工作前先查看：
 
 ```bash
 git status --short

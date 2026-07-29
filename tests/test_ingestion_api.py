@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.main import create_app
+from app.main import ArticleContentParser, create_app
 
 
 class RecordingExecutor:
@@ -51,6 +51,10 @@ def test_create_ingestion_queues_xiaohongshu_article_url(tmp_path: Path) -> None
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
     assert len(executor.calls) == 1
+
+
+def test_main_exposes_xiaohongshu_video_detector_for_background_ingestion() -> None:
+    assert ArticleContentParser.is_xhs_video_html('<video src="https://cdn.example/video.mp4"></video>')
 
 
 def test_create_ingestion_extracts_xiaohongshu_share_link_from_text(tmp_path: Path) -> None:
