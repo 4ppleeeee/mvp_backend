@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 
-from app.llm import normalize_analysis
+from app.llm import decide_ingestion, normalize_analysis
 from app.models import IngestionJob, SourceEvidence, TravelSource
 
 
@@ -23,8 +23,13 @@ class ImageIngestionService:
             image_base64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
             analysis = normalize_analysis(asyncio.run(self._llm_client.analyze_image(image_base64=image_base64, title_hint=image_path.name)))
             job.stage = "saving"
+            job.analysis_json = analysis.model_dump(mode="json")
+            job.ingest_decision = decide_ingestion(analysis)
+            job.evidence_text = analysis.body_text or analysis.title or image_path.name
+            job.evidence_origin = "ocr"
+            job.evidence_metadata_json = {"title": analysis.title or image_path.name}
             self._save(job)
-            if analysis.is_travel_related:
+            if job.ingest_decision == "accept":
                 source = TravelSource(
                     title=analysis.title or image_path.name,
                     body_text=analysis.body_text or analysis.title or image_path.name,

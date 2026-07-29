@@ -41,6 +41,8 @@ Ingestion 正在从固定的 `article/video/image` 分支迁移为“输入形�
 
 来源专属访问逻辑应封装在来源 Adapter 的访问上下文中。抖音已接入 BiliNote 风格的 `msToken` 准备：每次作品详情请求前由 `DouyinApiClient` 在内存中请求一次新 token，生成 `a_bogus` 后请求公开详情；token 不持久化、不写入数据库。`DouyinAdapter` 已纳入统一能力编排，并复用临时视频、FFmpeg 音频和 Whisper 链路。不得引入 Cookie 持久化、验证码或浏览器自动化。
 
+知识库准入审核已支持 `accept / review / reject`：地点相关但模型未直接判定为传统旅行内容时进入 `review`，后台任务详情页可确认入库或拒绝；审核结果记录在 `IngestionReview`，原始模型输出和完整证据保留在 `IngestionJob`。策略版本当前为 `v1`，判定逻辑在 `app/llm.py` 的 `decide_ingestion()`。
+
 不要为了适配小上下文模型而截断或覆盖完整证据。模型只输出结构化字段和有长度上限的摘要；长文本应更换长上下文模型，或在将来做分段检索/合并，原文始终保留。
 
 当前已验证的视频资料：任务 `ing_f6cf9d145b1a4fab`，资料 `src_506da751a09f4a61`，是京都伏见稻荷大社攻略。

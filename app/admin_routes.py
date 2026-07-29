@@ -12,6 +12,7 @@ from app.config import Settings
 from app.ingestion.classifier import ResourceClassifier
 from app.ingestion.input import extract_first_http_url
 from app.ingestion.article import SafeHtmlFetcher
+from app.ingestion.service import IngestionService
 from app.models import IngestionJob, SourceEvidence, TravelSource
 
 
@@ -186,6 +187,18 @@ def create_admin_router(settings: Settings) -> APIRouter:
     def job_detail(request: Request, job_id: str):
         ensure_logged_in(request)
         return templates.TemplateResponse(request, "job.html", {"job_id": job_id})
+
+    @router.post("/ingestions/{job_id}/review")
+    def review_ingestion(request: Request, job_id: str, decision: str = Form(), reason: str | None = Form(default=None)):
+        ensure_logged_in(request)
+        with Session(request.app.state.engine) as session:
+            try:
+                IngestionService(session=session, llm_client=object(), pipeline=object()).approve_review(
+                    job_id, decision=decision, reviewer=request.session.get("admin_username"), reason=reason
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return RedirectResponse(f"/admin/ingestions/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
 
     @router.get("/ingestions/{job_id}/fragment")
     def job_fragment(request: Request, job_id: str):

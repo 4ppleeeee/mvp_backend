@@ -1,10 +1,11 @@
 import asyncio
+from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
 from app.ingestion.domain import EvidenceBundle, MediaExtractionError
-from app.llm import normalize_analysis
-from app.models import IngestionJob, SourceEvidence, TravelSource
+from app.llm import SourceAnalysis, decide_ingestion, normalize_analysis
+from app.models import IngestionJob, IngestionReview, SourceEvidence, TravelSource
 
 
 class IngestionService:
@@ -39,52 +40,33 @@ class IngestionService:
                     )
                 )
             )
+            ingest_decision = decide_ingestion(analysis)
             self._update(
                 job,
                 stage="saving",
                 analysis_json=analysis.model_dump(mode="json"),
                 evidence_text=bundle.transcript.full_text,
+                ingest_decision=ingest_decision,
+                evidence_origin=bundle.transcript.origin.value,
+                evidence_language=bundle.transcript.language,
+                evidence_segments=[
+                    {
+                        "start_seconds": segment.start_seconds,
+                        "end_seconds": segment.end_seconds,
+                        "text": segment.text,
+                    }
+                    for segment in bundle.transcript.segments
+                ],
+                evidence_metadata_json={
+                    "title": bundle.metadata.title,
+                    "author": bundle.metadata.author,
+                    "published_at": bundle.metadata.published_at,
+                    "duration_seconds": bundle.metadata.duration_seconds,
+                    "thumbnail_url": bundle.metadata.thumbnail_url,
+                },
             )
-            if analysis.is_travel_related:
-                source = TravelSource(
-                    title=analysis.title or bundle.metadata.title,
-                    body_text=bundle.transcript.full_text,
-                    summary_text=analysis.body_text,
-                    original_url=job.original_url,
-                    source_platform=bundle.metadata.source_platform,
-                    cover_image_url=bundle.metadata.thumbnail_url,
-                    destination=analysis.destination,
-                    category=analysis.category,
-                    location_name=analysis.location_name,
-                    normalized_tags=analysis.normalized_tags,
-                    raw_tags=analysis.raw_tags,
-                )
-                self._session.add(source)
-                self._session.flush()
-                self._session.add(
-                    SourceEvidence(
-                        source_id=source.source_id,
-                        origin=bundle.transcript.origin.value,
-                        language=bundle.transcript.language,
-                        full_text=bundle.transcript.full_text,
-                        segments=[
-                            {
-                                "start_seconds": segment.start_seconds,
-                                "end_seconds": segment.end_seconds,
-                                "text": segment.text,
-                            }
-                            for segment in bundle.transcript.segments
-                        ],
-                        metadata_json={
-                            "title": bundle.metadata.title,
-                            "author": bundle.metadata.author,
-                            "published_at": bundle.metadata.published_at,
-                            "duration_seconds": bundle.metadata.duration_seconds,
-                            "thumbnail_url": bundle.metadata.thumbnail_url,
-                        },
-                    )
-                )
-                job.source_id = source.source_id
+            if ingest_decision == "accept":
+                self._save_source(job, analysis, bundle)
             self._update(job, status="succeeded", stage="succeeded")
             return job
         except MediaExtractionError as exc:
@@ -102,6 +84,110 @@ class IngestionService:
             self._update(job, status="failed", stage="failed", error_code="ingestion_failed", error_message=str(exc))
             return job
 
+    def approve_review(self, job_id: str, *, decision: str, reviewer: str | None = None, reason: str | None = None) -> IngestionJob:
+        if decision not in {"accept", "reject"}:
+            raise ValueError("review decision must be accept or reject")
+        job = self._session.exec(select(IngestionJob).where(IngestionJob.job_id == job_id)).one()
+        if job.status != "succeeded" or job.ingest_decision != "review":
+            raise ValueError("ingestion is not awaiting review")
+        analysis_data = {
+            "is_travel_related": False,
+            "confidence": 0.0,
+            "reason": None,
+            "title": None,
+            "body_text": None,
+            "destination": "未知",
+            "category": "unknown",
+            "location_name": None,
+            "normalized_tags": [],
+            "raw_tags": [],
+            **job.analysis_json,
+        }
+        analysis = SourceAnalysis.model_validate(analysis_data)
+        if decision == "accept":
+            self._save_source_from_job(job, analysis)
+        job.ingest_decision = decision
+        job.reviewed_at = datetime.now(timezone.utc)
+        job.reviewed_by = reviewer
+        job.review_reason = reason
+        self._session.add(job)
+        self._session.add(
+            IngestionReview(
+                job_id=job.job_id,
+                decision=decision,
+                reviewer=reviewer,
+                reason=reason,
+                policy_version=job.policy_version,
+            )
+        )
+        self._session.commit()
+        self._session.refresh(job)
+        return job
+
+    def _save_source(self, job: IngestionJob, analysis: SourceAnalysis, bundle: EvidenceBundle) -> None:
+        source = TravelSource(
+            title=analysis.title or bundle.metadata.title,
+            body_text=bundle.transcript.full_text,
+            summary_text=analysis.body_text,
+            original_url=job.original_url,
+            source_platform=bundle.metadata.source_platform,
+            cover_image_url=bundle.metadata.thumbnail_url,
+            destination=analysis.destination,
+            category=analysis.category,
+            location_name=analysis.location_name,
+            normalized_tags=analysis.normalized_tags,
+            raw_tags=analysis.raw_tags,
+        )
+        self._session.add(source)
+        self._session.flush()
+        self._session.add(
+            SourceEvidence(
+                source_id=source.source_id,
+                origin=bundle.transcript.origin.value,
+                language=bundle.transcript.language,
+                full_text=bundle.transcript.full_text,
+                segments=[
+                    {"start_seconds": segment.start_seconds, "end_seconds": segment.end_seconds, "text": segment.text}
+                    for segment in bundle.transcript.segments
+                ],
+                metadata_json={
+                    "title": bundle.metadata.title,
+                    "author": bundle.metadata.author,
+                    "published_at": bundle.metadata.published_at,
+                    "duration_seconds": bundle.metadata.duration_seconds,
+                    "thumbnail_url": bundle.metadata.thumbnail_url,
+                },
+            )
+        )
+        job.source_id = source.source_id
+
+    def _save_source_from_job(self, job: IngestionJob, analysis: SourceAnalysis) -> None:
+        source = TravelSource(
+            title=analysis.title or job.original_url or "未命名资料",
+            body_text=job.evidence_text or analysis.body_text or "",
+            summary_text=analysis.body_text,
+            original_url=job.original_url,
+            source_platform=job.source_platform,
+            cover_image_url=job.evidence_metadata_json.get("thumbnail_url") if isinstance(job.evidence_metadata_json.get("thumbnail_url"), str) else None,
+            destination=analysis.destination,
+            category=analysis.category,
+            location_name=analysis.location_name,
+            normalized_tags=analysis.normalized_tags,
+            raw_tags=analysis.raw_tags,
+        )
+        self._session.add(source)
+        self._session.flush()
+        self._session.add(
+            SourceEvidence(
+                source_id=source.source_id,
+                origin=job.evidence_origin or "article",
+                language=job.evidence_language,
+                full_text=job.evidence_text or "",
+                segments=job.evidence_segments,
+                metadata_json=job.evidence_metadata_json,
+            )
+        )
+        job.source_id = source.source_id
     def _extract_with_fallback(self, job: IngestionJob) -> EvidenceBundle:
         try:
             return self._pipeline.extract(job.original_url or "", job.job_id)

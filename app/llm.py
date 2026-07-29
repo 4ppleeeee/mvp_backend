@@ -166,6 +166,15 @@ def normalize_analysis(analysis: SourceAnalysis) -> SourceAnalysis:
     )
 
 
+def decide_ingestion(analysis: SourceAnalysis) -> str:
+    """Return the system admission decision without treating the LLM flag as final."""
+    if analysis.is_travel_related:
+        return "accept"
+    has_destination = _has_specific_destination(analysis.destination)
+    has_category = analysis.category != Category.unknown.value
+    return "review" if has_destination and has_category else "reject"
+
+
 def normalize_query(query: TravelQuery) -> TravelQuery:
     valid_categories = {item.value for item in Category if item is not Category.unknown}
     return query.model_copy(

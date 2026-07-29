@@ -136,6 +136,7 @@ button { padding: 11px 14px; border: 0; border-radius: 9px; background: #292a26;
 .saved-result { display: flex; align-items: center; gap: 11px; margin: 18px 0; padding: 14px; background: #edf6ee; border-radius: 13px; color: #386d4a; text-decoration: none; }
 .saved-result > span { display: grid; width: 24px; height: 24px; place-items: center; background: #5b9c6d; border-radius: 50%; color: #fff; }.saved-result small { display: block; color: #64806c; font-size: 12px; }.saved-result em { margin-left: auto; font-size: 12px; font-style: normal; font-weight: 750; }
 .empty-state { margin: 18px 0; padding: 15px; background: #f5f1e9; border-radius: 12px; color: #706d65; font-size: 13px; }.empty-state b, .empty-state span { display: block; }.empty-state span { margin-top: 4px; }
+.review-box { margin: 18px 0; padding: 16px; background: #fff8e7; border: 1px solid #ead9aa; border-radius: 13px; color: #6d5a2e; font-size: 13px; }.review-box > b, .review-box > span { display: block; }.review-box > span { margin-top: 5px; color: #8b7951; font-size: 12px; }.review-actions { display: flex; gap: 8px; margin-top: 13px; }.review-actions form { margin: 0; }.review-actions button { padding: 8px 11px; font-size: 12px; }
 
 .login-shell { display: grid; min-height: 100vh; grid-template-columns: minmax(0, 1fr) 470px; background: #f4f1e9; }
 .login-artwork { position: relative; overflow: hidden; padding: 11vh 11vw; background: linear-gradient(145deg, #dce3c7, #f2d7bb); }

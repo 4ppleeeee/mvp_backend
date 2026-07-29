@@ -24,6 +24,19 @@ class TravelLlm:
         )
 
 
+class ReviewLlm:
+    async def analyze_source(self, **_: object) -> SourceAnalysis:
+        return SourceAnalysis(
+            is_travel_related=False,
+            reason="内容是淄博博山菜探店，但属于地点相关内容",
+            confidence=0.82,
+            body_text="淄博博山菜探店体验。",
+            destination="淄博",
+            category="eat",
+            location_name="博山",
+        )
+
+
 class FakePipeline:
     def extract(self, url: str, job_id: str) -> EvidenceBundle:
         assert url == "https://youtu.be/abcdefghijk"
@@ -60,3 +73,22 @@ def test_ingestion_service_saves_source_and_timestamped_evidence(tmp_path: Path)
         assert evidence.segments == [{"start_seconds": 0, "end_seconds": 2, "text": "表参道咖啡路线"}]
         assert result.evidence_text == "表参道咖啡路线"
         assert result.analysis_json["destination"] == "东京"
+
+
+def test_ingestion_service_keeps_location_related_false_analysis_for_review(tmp_path: Path) -> None:
+    engine = create_db_engine(Settings(database_url=f"sqlite:///{tmp_path / 'review.db'}"))
+    init_db(engine)
+    with Session(engine) as session:
+        job = IngestionJob(input_type="url", original_url="https://youtu.be/abcdefghijk", source_platform="youtube", media_type="video")
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+
+        result = IngestionService(session=session, llm_client=ReviewLlm(), pipeline=FakePipeline()).run(job.job_id)
+
+        assert result.status == "succeeded"
+        assert result.ingest_decision == "review"
+        assert result.source_id is None
+        assert result.evidence_text == "表参道咖啡路线"
+        assert result.evidence_segments == [{"start_seconds": 0, "end_seconds": 2, "text": "表参道咖啡路线"}]
+        assert session.exec(select(TravelSource)).all() == []

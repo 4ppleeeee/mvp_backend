@@ -2,11 +2,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 from pwdlib import PasswordHash
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.config import Settings
 from app.main import create_app
-from app.models import TravelSource
+from app.models import IngestionJob, IngestionReview, TravelSource
 
 
 def configured_client(tmp_path: Path, *, raise_server_exceptions: bool = True) -> TestClient:
@@ -198,3 +198,47 @@ def test_logged_in_admin_can_submit_image(tmp_path: Path) -> None:
     assert response.status_code == 303
     assert response.headers["location"].startswith("/admin/ingestions/ing_")
     assert len(executor.calls) == 1
+
+
+def test_admin_can_accept_reviewed_ingestion(tmp_path: Path) -> None:
+    client = configured_client(tmp_path)
+    with Session(client.app.state.engine) as session:
+        job = IngestionJob(
+            input_type="url",
+            original_url="https://youtu.be/abcdefghijk",
+            source_platform="youtube",
+            media_type="video",
+            status="succeeded",
+            stage="succeeded",
+            ingest_decision="review",
+            analysis_json={
+                "title": "淄博博山菜探店",
+                "body_text": "淄博博山菜探店体验。",
+                "destination": "淄博",
+                "category": "eat",
+                "location_name": "博山",
+                "normalized_tags": [],
+                "raw_tags": ["探店"],
+            },
+            evidence_text="我们现在在博山吃博山菜。",
+            evidence_origin="asr",
+            evidence_language="zh",
+            evidence_segments=[{"start_seconds": 0, "end_seconds": 2, "text": "我们现在在博山吃博山菜。"}],
+            evidence_metadata_json={"title": "淄博博山菜探店"},
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        job_id = job.job_id
+
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+    response = client.post(f"/admin/ingestions/{job_id}/review", data={"decision": "accept"}, follow_redirects=False)
+
+    assert response.status_code == 303
+    with Session(client.app.state.engine) as session:
+        saved_job = session.exec(select(IngestionJob).where(IngestionJob.job_id == job_id)).one()
+        assert saved_job.ingest_decision == "accept"
+        assert saved_job.source_id is not None
+        assert session.exec(select(TravelSource)).first() is not None
+        review = session.exec(select(IngestionReview).where(IngestionReview.job_id == job_id)).one()
+        assert review.decision == "accept"

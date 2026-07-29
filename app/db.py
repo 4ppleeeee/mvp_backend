@@ -23,6 +23,7 @@ def init_db(engine: Engine) -> None:
         return
     columns = {column["name"] for column in inspect(engine).get_columns("ingestionjob")}
     source_columns = {column["name"] for column in inspect(engine).get_columns("travelsource")}
+    job_columns = columns
     with engine.begin() as connection:
         if "media_egress" not in columns:
             connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN media_egress VARCHAR"))
@@ -32,6 +33,24 @@ def init_db(engine: Engine) -> None:
             connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN analysis_json JSON"))
         if "evidence_text" not in columns:
             connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN evidence_text TEXT"))
+        if "ingest_decision" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN ingest_decision VARCHAR DEFAULT 'pending'"))
+        if "policy_version" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN policy_version VARCHAR DEFAULT 'v1'"))
+        if "reviewed_at" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN reviewed_at DATETIME"))
+        if "reviewed_by" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN reviewed_by VARCHAR"))
+        if "review_reason" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN review_reason VARCHAR"))
+        if "evidence_origin" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN evidence_origin VARCHAR"))
+        if "evidence_language" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN evidence_language VARCHAR"))
+        if "evidence_segments" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN evidence_segments JSON"))
+        if "evidence_metadata_json" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN evidence_metadata_json JSON"))
         if "summary_text" not in source_columns:
             connection.execute(text("ALTER TABLE travelsource ADD COLUMN summary_text TEXT"))
 

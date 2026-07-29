@@ -17,6 +17,10 @@ def new_evidence_id() -> str:
     return f"evd_{uuid4().hex[:16]}"
 
 
+def new_review_id() -> str:
+    return f"rev_{uuid4().hex[:16]}"
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -61,6 +65,15 @@ class IngestionJob(SQLModel, table=True):
     failure_stage: str | None = None
     analysis_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
     evidence_text: str | None = None
+    ingest_decision: str = Field(default="pending", index=True)
+    policy_version: str = Field(default="v1")
+    reviewed_at: datetime | None = None
+    reviewed_by: str | None = None
+    review_reason: str | None = None
+    evidence_origin: str | None = None
+    evidence_language: str | None = None
+    evidence_segments: list[dict[str, object]] = Field(default_factory=list, sa_column=Column(JSON))
+    evidence_metadata_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
 class SourceEvidence(SQLModel, table=True):
@@ -73,4 +86,15 @@ class SourceEvidence(SQLModel, table=True):
     full_text: str
     segments: list[dict[str, object]] = Field(default_factory=list, sa_column=Column(JSON))
     metadata_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class IngestionReview(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    review_id: str = Field(default_factory=new_review_id, index=True, unique=True)
+    job_id: str = Field(index=True)
+    decision: str = Field(index=True)
+    reviewer: str | None = None
+    reason: str | None = None
+    policy_version: str = Field(default="v1")
     created_at: datetime = Field(default_factory=utc_now, index=True)

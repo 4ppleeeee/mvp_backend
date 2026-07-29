@@ -61,6 +61,8 @@ capabilities = metadata + audio + transcription
 
 抖音来源已接入 BiliNote 风格的来源专属访问上下文：`app/ingestion/douyin_api.py` 的 `DouyinApiClient` 在每次作品详情请求前通过 `BiliNoteMsTokenClient` 申请一次性 `msToken`，再生成 `a_bogus` 并请求详情；token 只存在单次请求内存，不落盘、不进数据库。`DouyinAdapter` 负责元数据、临时视频下载和 FFmpeg 音频提取，随后复用统一 Whisper/关键帧能力。默认来源注册表会把 primary/fallback 的媒体出口策略传给抖音客户端。继续禁止 Cookie 持久化、验证码和浏览器自动化。
 
+知识库准入审核已支持 `accept / review / reject`：地点相关但模型未直接判定为传统旅行内容时进入 `review`，后台任务详情页可确认入库或拒绝；审核结果记录在 `IngestionReview`，原始模型输出和完整证据保留在 `IngestionJob`。策略版本当前为 `v1`，判定逻辑在 `app/llm.py` 的 `decide_ingestion()`。
+
 ## 最新关键帧媒体管线
 
 关键帧功能已实现，但默认关闭，不改变正常字幕/Whisper 流程。
