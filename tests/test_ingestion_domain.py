@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from app.ingestion.classifier import ResourceClassifier
+from app.ingestion.adapters.xiaohongshu import XiaohongshuAdapter
 from app.ingestion.domain import EvidenceOrigin, MediaType, Transcript, TranscriptSegment
 from app.ingestion.media import JobDirectory
 from app.ingestion.transcriber import normalize_bilinote_whisper_segments
@@ -54,11 +55,24 @@ def test_classifier_treats_unknown_http_url_as_article() -> None:
     assert descriptor.source_platform is None
 
 
-def test_classifier_identifies_xiaohongshu_as_article_source() -> None:
+def test_classifier_identifies_xiaohongshu_discovery_video_source() -> None:
+    descriptor = ResourceClassifier.default().classify_url("https://www.xiaohongshu.com/discovery/item/66abc")
+
+    assert descriptor.media_type is MediaType.VIDEO
+    assert descriptor.source_platform == "xiaohongshu"
+
+
+def test_classifier_keeps_xiaohongshu_explore_notes_on_article_pipeline() -> None:
     descriptor = ResourceClassifier.default().classify_url("https://www.xiaohongshu.com/explore/66abc")
 
     assert descriptor.media_type is MediaType.ARTICLE
     assert descriptor.source_platform == "xiaohongshu"
+
+
+def test_xiaohongshu_adapter_falls_back_to_whisper_when_no_public_caption_exists() -> None:
+    transcript = XiaohongshuAdapter().fetch_caption("https://www.xiaohongshu.com/explore/66abc")
+
+    assert transcript is None
 
 
 def test_job_directory_removes_temporary_audio_when_it_exits(tmp_path: Path) -> None:

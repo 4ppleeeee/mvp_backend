@@ -19,6 +19,8 @@
 
 后端是 FastAPI + SQLModel/SQLite 服务，支持链接、公开网页、小红书公开 H5、图片和视频的异步 Ingestion。视频获取/转写沿用 BiliNote 风格：先取公开字幕或自动字幕，失败后用 yt-dlp 获取临时音频并由 faster-whisper 转写；临时音频、视频、关键帧均不持久化。
 
+小红书视频目前只识别已验证的直链路径 `https://www.xiaohongshu.com/discovery/item/...`：它没有公开字幕，因此直接进入临时音频 + Whisper 链路。`/explore/...` 图文笔记和 `xhslink` 分享短链继续走公开文章抓取，避免把图文资料错误交给 yt-dlp。
+
 视频、文章和图片的已入库资料必须遵守以下边界：
 
 - `IngestionJob.evidence_text`：任务级完整文本，支持排错与重新分析。
@@ -48,7 +50,7 @@ ssh -p 12343 aatroxli@openclaw.aatroxli.site \
    sh -lc "pip install -q pytest && pytest -q"'
 ```
 
-截至本文件更新，完整测试为 `65 passed`（存在 FastAPI/Starlette 弃用警告）。每次修改后至少运行相关测试、`git diff --check`，部署后验证 `/health`。
+截至本文件更新，完整测试为 `67 passed`（存在 FastAPI/Starlette 弃用警告）。每次修改后至少运行相关测试、`git diff --check`，部署后验证 `/health`。
 
 ## 安全部署到 claw
 
