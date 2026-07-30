@@ -29,6 +29,7 @@ class PipelineTranscriber(Protocol):
 
 
 PipelineProgressCallback = Callable[[str, int, str], None]
+PipelineMetadataCallback = Callable[[MediaMetadata], None]
 
 
 class MediaPipeline:
@@ -56,7 +57,14 @@ class MediaPipeline:
     def media_egress(self) -> str:
         return getattr(getattr(self._adapter, "_media_egress_policy", None), "route", "router_default")
 
-    def extract(self, url: str, job_id: str, *, progress_callback: PipelineProgressCallback | None = None) -> EvidenceBundle:
+    def extract(
+        self,
+        url: str,
+        job_id: str,
+        *,
+        progress_callback: PipelineProgressCallback | None = None,
+        metadata_callback: PipelineMetadataCallback | None = None,
+    ) -> EvidenceBundle:
         with JobDirectory(self._temp_root, job_id) as job_dir:
             if progress_callback:
                 progress_callback("extracting", 10, "获取平台字幕")
@@ -72,6 +80,8 @@ class MediaPipeline:
                 if transcript is None:
                     raise
                 metadata = MediaMetadata(title=url, source_platform="unknown", canonical_url=url)
+            if metadata_callback:
+                metadata_callback(metadata)
             keyframe_images: tuple[str, ...] = ()
             if self._keyframe_enabled:
                 if self._plan is not None and not self._plan.probe.supports(Capability.VIDEO):

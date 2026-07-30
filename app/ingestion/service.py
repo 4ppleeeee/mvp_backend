@@ -251,12 +251,34 @@ class IngestionService:
             except MediaExtractionError:
                 raise
 
-    @staticmethod
-    def _extract_pipeline(pipeline: object, job: IngestionJob, report: object) -> EvidenceBundle:
+    def _extract_pipeline(self, pipeline: object, job: IngestionJob, report: object) -> EvidenceBundle:
         extract = pipeline.extract
-        if "progress_callback" in inspect.signature(extract).parameters:
-            return extract(job.original_url or "", job.job_id, progress_callback=report)
-        return extract(job.original_url or "", job.job_id)
+        parameters = inspect.signature(extract).parameters
+        kwargs: dict[str, object] = {}
+        if "progress_callback" in parameters:
+            kwargs["progress_callback"] = report
+        if "metadata_callback" in parameters:
+            def persist_metadata(metadata: object) -> None:
+                if not hasattr(metadata, "title"):
+                    return
+                evidence_metadata = {
+                    **(job.evidence_metadata_json or {}),
+                    "title": metadata.title,
+                    "author": metadata.author,
+                    "published_at": metadata.published_at,
+                    "duration_seconds": metadata.duration_seconds,
+                    "thumbnail_url": metadata.thumbnail_url,
+                    "source_platform": metadata.source_platform,
+                }
+                self._update(
+                    job,
+                    canonical_url=metadata.canonical_url,
+                    source_platform=metadata.source_platform or job.source_platform,
+                    evidence_metadata_json=evidence_metadata,
+                )
+
+            kwargs["metadata_callback"] = persist_metadata
+        return extract(job.original_url or "", job.job_id, **kwargs)
 
     def _update(self, job: IngestionJob, **values: object) -> None:
         for name, value in values.items():

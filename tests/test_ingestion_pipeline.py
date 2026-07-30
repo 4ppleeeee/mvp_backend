@@ -166,6 +166,16 @@ def test_media_pipeline_transcribes_audio_resource_without_requesting_video(tmp_
     assert not (tmp_path / "ing_audio").exists()
 
 
+def test_media_pipeline_reports_metadata_before_later_processing(tmp_path: Path) -> None:
+    reported: list[MediaMetadata] = []
+
+    MediaPipeline(adapter=FakeAdapter(None), transcriber=FakeTranscriber(), temp_root=tmp_path).extract(
+        "https://youtu.be/abcdefghijk", "ing_metadata", metadata_callback=reported.append
+    )
+
+    assert reported == [MediaMetadata(title="视频", source_platform="youtube", canonical_url="https://youtu.be/abcdefghijk")]
+
+
 def test_video_pipeline_keeps_public_caption_when_metadata_is_restricted(tmp_path: Path) -> None:
     caption = Transcript(
         language="zh",
