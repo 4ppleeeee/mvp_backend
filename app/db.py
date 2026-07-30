@@ -51,6 +51,12 @@ def init_db(engine: Engine) -> None:
             connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN evidence_segments JSON"))
         if "evidence_metadata_json" not in job_columns:
             connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN evidence_metadata_json JSON"))
+        if "progress_percent" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN progress_percent INTEGER DEFAULT 0"))
+        if "progress_message" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN progress_message VARCHAR"))
+        if "progress_updated_at" not in job_columns:
+            connection.execute(text("ALTER TABLE ingestionjob ADD COLUMN progress_updated_at DATETIME"))
         if "summary_text" not in source_columns:
             connection.execute(text("ALTER TABLE travelsource ADD COLUMN summary_text TEXT"))
 

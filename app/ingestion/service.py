@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from datetime import datetime, timezone
 
 from sqlmodel import Session, select
@@ -18,12 +19,27 @@ class IngestionService:
     def run(self, job_id: str) -> IngestionJob:
         job = self._session.exec(select(IngestionJob).where(IngestionJob.job_id == job_id)).one()
         try:
-            self._update(job, status="running", stage="extracting")
+            self._update(
+                job,
+                status="running",
+                stage="extracting",
+                started_at=job.started_at or datetime.now(timezone.utc),
+                finished_at=None,
+                error_code=None,
+                error_message=None,
+                failure_stage=None,
+                progress_percent=5,
+                progress_message="开始解析",
+                progress_updated_at=datetime.now(timezone.utc),
+            )
             job.media_egress = getattr(self._pipeline, "media_egress", "router_default")
             bundle = self._extract_with_fallback(job)
             self._update(
                 job,
                 stage="analyzing",
+                progress_percent=88,
+                progress_message="提取完成，开始分析内容",
+                progress_updated_at=datetime.now(timezone.utc),
                 canonical_url=bundle.metadata.canonical_url,
                 source_platform=bundle.metadata.source_platform,
                 media_type=bundle.transcript.media_type.value,
@@ -44,6 +60,9 @@ class IngestionService:
             self._update(
                 job,
                 stage="saving",
+                progress_percent=97,
+                progress_message="保存解析结果",
+                progress_updated_at=datetime.now(timezone.utc),
                 analysis_json=analysis.model_dump(mode="json"),
                 evidence_text=bundle.transcript.full_text,
                 ingest_decision=ingest_decision,
@@ -67,7 +86,15 @@ class IngestionService:
             )
             if ingest_decision == "accept":
                 self._save_source(job, analysis, bundle)
-            self._update(job, status="succeeded", stage="succeeded")
+            self._update(
+                job,
+                status="succeeded",
+                stage="succeeded",
+                progress_percent=100,
+                progress_message="解析完成",
+                progress_updated_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(timezone.utc),
+            )
             return job
         except MediaExtractionError as exc:
             self._update(
@@ -78,10 +105,22 @@ class IngestionService:
                 error_message=exc.safe_message,
                 media_egress=exc.route,
                 failure_stage=exc.phase,
+                progress_message=f"解析失败：{exc.phase}",
+                progress_updated_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(timezone.utc),
             )
             return job
         except Exception as exc:
-            self._update(job, status="failed", stage="failed", error_code="ingestion_failed", error_message=str(exc))
+            self._update(
+                job,
+                status="failed",
+                stage="failed",
+                error_code="ingestion_failed",
+                error_message=str(exc),
+                progress_message="解析失败",
+                progress_updated_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(timezone.utc),
+            )
             return job
 
     def approve_review(self, job_id: str, *, decision: str, reviewer: str | None = None, reason: str | None = None) -> IngestionJob:
@@ -190,8 +229,17 @@ class IngestionService:
         )
         job.source_id = source.source_id
     def _extract_with_fallback(self, job: IngestionJob) -> EvidenceBundle:
+        def report(stage: str, percent: int, message: str) -> None:
+            self._update(
+                job,
+                stage=stage,
+                progress_percent=percent,
+                progress_message=message,
+                progress_updated_at=datetime.now(timezone.utc),
+            )
+
         try:
-            return self._pipeline.extract(job.original_url or "", job.job_id)
+            return self._extract_pipeline(self._pipeline, job, report)
         except MediaExtractionError as first_error:
             self._update(job, media_egress=first_error.route, failure_stage=first_error.phase)
             if not first_error.retryable or self._fallback_pipeline is None:
@@ -199,9 +247,16 @@ class IngestionService:
             fallback_route = getattr(self._fallback_pipeline, "media_egress", "configured_proxy")
             self._update(job, stage="retrying_media_egress", media_egress=fallback_route, failure_stage=None)
             try:
-                return self._fallback_pipeline.extract(job.original_url or "", job.job_id)
+                return self._extract_pipeline(self._fallback_pipeline, job, report)
             except MediaExtractionError:
                 raise
+
+    @staticmethod
+    def _extract_pipeline(pipeline: object, job: IngestionJob, report: object) -> EvidenceBundle:
+        extract = pipeline.extract
+        if "progress_callback" in inspect.signature(extract).parameters:
+            return extract(job.original_url or "", job.job_id, progress_callback=report)
+        return extract(job.original_url or "", job.job_id)
 
     def _update(self, job: IngestionJob, **values: object) -> None:
         for name, value in values.items():

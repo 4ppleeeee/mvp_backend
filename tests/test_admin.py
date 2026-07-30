@@ -86,6 +86,28 @@ def test_logged_in_admin_dashboard_exposes_url_and_image_submission(tmp_path: Pa
     assert 'class="task-workspace"' in response.text
 
 
+def test_logged_in_admin_dashboard_uses_platform_logo_for_url_task(tmp_path: Path) -> None:
+    client = configured_client(tmp_path)
+    with Session(client.app.state.engine) as session:
+        session.add(
+            IngestionJob(
+                input_type="url",
+                original_url="https://www.xiaoyuzhoufm.com/episode/example",
+                source_platform="xiaoyuzhou",
+                media_type="audio",
+            )
+        )
+        session.commit()
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert 'class="task-icon task-icon-url platform-logo platform-xiaoyuzhou"' in response.text
+    assert "platform-icon-xiaoyuzhou" in response.text
+    assert '>链<' not in response.text
+
+
 def test_logged_in_admin_lists_only_saved_results(tmp_path: Path) -> None:
     client = configured_client(tmp_path)
     source_id = create_saved_source(client)

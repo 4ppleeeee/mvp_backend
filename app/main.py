@@ -173,6 +173,9 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             error_message=job.error_message,
             media_egress=job.media_egress,
             failure_stage=job.failure_stage,
+            progress_percent=job.progress_percent,
+            progress_message=job.progress_message,
+            progress_updated_at=job.progress_updated_at,
         )
 
     @app.post("/ingestions/image", response_model=IngestionAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)

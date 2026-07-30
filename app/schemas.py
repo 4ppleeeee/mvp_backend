@@ -81,6 +81,9 @@ class IngestionStatusResponse(BaseModel):
     error_message: str | None = None
     media_egress: str | None = None
     failure_stage: str | None = None
+    progress_percent: int = 0
+    progress_message: str | None = None
+    progress_updated_at: datetime | None = None
 
 
 class AnalyzeImageRequest(BaseModel):

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -5,13 +6,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+    && apt-get install --no-install-recommends -y ffmpeg nodejs
+
 COPY pyproject.toml ./
 COPY app ./app
 
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y ffmpeg nodejs \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install .
 
 EXPOSE 8000
 

@@ -88,6 +88,15 @@ button { padding: 11px 14px; border: 0; border-radius: 9px; background: #292a26;
 .task-icon { display: grid; width: 39px; height: 39px; place-items: center; border-radius: 11px; font-size: 12px; font-weight: 800; }
 .task-icon-url { background: #fff0ec; color: #bd5942; }
 .task-icon-image { background: #edf3ea; color: #59765c; }
+.platform-logo { position: relative; }
+.platform-logo svg { display: block; width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+.platform-logo svg path:nth-child(2) { fill: none; }
+.platform-icon-youtube { color: #e05243; }.platform-icon-youtube rect { fill: #e05243; stroke: #e05243; }.platform-icon-youtube path { fill: #fff; stroke: none; }
+.platform-icon-bilibili { color: #4c9fe8; }.platform-icon-bilibili path:first-child { fill: #4c9fe8; stroke: #4c9fe8; }.platform-icon-bilibili path:last-child { stroke: #fff; stroke-width: 2; }
+.platform-icon-douyin { color: #252525; }.platform-icon-douyin path { stroke-width: 2.4; }
+.platform-icon-xiaohongshu { color: #e6534d; }.platform-icon-xiaohongshu rect { fill: #e6534d; stroke: #e6534d; }.platform-icon-xiaohongshu path { stroke: #fff; stroke-width: 1.5; }
+.platform-icon-xiaoyuzhou { color: #806bc2; }.platform-icon-xiaoyuzhou path:first-child { fill: #806bc2; stroke: #806bc2; }.platform-icon-xiaoyuzhou path:last-child { stroke: #fff; stroke-width: 1.6; }
+.platform-initial { font-size: 12px; font-weight: 800; }
 .task-main { min-width: 0; }
 .task-main strong { display: block; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .task-main small { display: block; margin-top: 5px; color: #8b877e; font-size: 11px; }
@@ -132,6 +141,8 @@ button { padding: 11px 14px; border: 0; border-radius: 9px; background: #292a26;
 
 .detail-pane { padding: 30px 36px 42px; }.detail-pane .selected-result { margin: 22px 0 0; }.back { display: inline-block; margin-bottom: 18px; }
 .job-card { margin-top: 22px; padding: 24px; background: #fff; border: 1px solid #e8e1d7; border-radius: 18px; line-height: 1.65; }
+.progress-label { margin: 14px 0 6px; color: #b85b3f; font-weight: 700; }
+progress { display: block; width: 100%; height: 9px; accent-color: #c56245; }
 .job-summary { padding-bottom: 16px; border-bottom: 1px solid #eee8de; }.task-error { padding: 12px; background: #fff0ed; border-radius: 10px; color: #b74f43; font-size: 13px; }
 .saved-result { display: flex; align-items: center; gap: 11px; margin: 18px 0; padding: 14px; background: #edf6ee; border-radius: 13px; color: #386d4a; text-decoration: none; }
 .saved-result > span { display: grid; width: 24px; height: 24px; place-items: center; background: #5b9c6d; border-radius: 50%; color: #fff; }.saved-result small { display: block; color: #64806c; font-size: 12px; }.saved-result em { margin-left: auto; font-size: 12px; font-style: normal; font-weight: 750; }

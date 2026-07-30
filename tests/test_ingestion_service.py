@@ -38,9 +38,11 @@ class ReviewLlm:
 
 
 class FakePipeline:
-    def extract(self, url: str, job_id: str) -> EvidenceBundle:
+    def extract(self, url: str, job_id: str, *, progress_callback=None) -> EvidenceBundle:
         assert url == "https://youtu.be/abcdefghijk"
         assert job_id.startswith("ing_")
+        if progress_callback:
+            progress_callback("extracting", 25, "获取元数据")
         return EvidenceBundle(
             metadata=MediaMetadata(title="东京咖啡路线", source_platform="youtube", canonical_url=url),
             transcript=Transcript(
@@ -73,6 +75,32 @@ def test_ingestion_service_saves_source_and_timestamped_evidence(tmp_path: Path)
         assert evidence.segments == [{"start_seconds": 0, "end_seconds": 2, "text": "表参道咖啡路线"}]
         assert result.evidence_text == "表参道咖啡路线"
         assert result.analysis_json["destination"] == "东京"
+
+
+def test_ingestion_service_clears_old_error_and_persists_progress(tmp_path: Path) -> None:
+    engine = create_db_engine(Settings(database_url=f"sqlite:///{tmp_path / 'progress.db'}"))
+    init_db(engine)
+    with Session(engine) as session:
+        job = IngestionJob(
+            input_type="url",
+            original_url="https://youtu.be/abcdefghijk",
+            source_platform="youtube",
+            media_type="video",
+            error_code="ingestion_failed",
+            error_message="stale error",
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+
+        result = IngestionService(session=session, llm_client=TravelLlm(), pipeline=FakePipeline()).run(job.job_id)
+
+        assert result.status == "succeeded"
+        assert result.progress_percent == 100
+        assert result.progress_message == "解析完成"
+        assert result.progress_updated_at is not None
+        assert result.error_code is None
+        assert result.error_message is None
 
 
 def test_ingestion_service_keeps_location_related_false_analysis_for_review(tmp_path: Path) -> None:
