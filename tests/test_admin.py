@@ -86,6 +86,14 @@ def test_logged_in_admin_dashboard_exposes_url_and_image_submission(tmp_path: Pa
     assert 'class="task-workspace"' in response.text
 
 
+def test_admin_submit_css_keeps_url_submit_button_on_one_line() -> None:
+    stylesheet = Path("app/static/admin.css").read_text()
+
+    assert ".url-form { min-width: 0; }" in stylesheet
+    assert ".url-form input { width: 100%; min-width: 0; flex: 1 1 auto; }" in stylesheet
+    assert ".url-form button { flex: 0 0 auto; white-space: nowrap; }" in stylesheet
+
+
 def test_logged_in_admin_dashboard_uses_platform_logo_for_url_task(tmp_path: Path) -> None:
     client = configured_client(tmp_path)
     with Session(client.app.state.engine) as session:

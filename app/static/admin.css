@@ -71,8 +71,11 @@ body { margin: 0; }
 }
 
 .submit-card label, .login-form label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 750; }
+.url-form { min-width: 0; }
 .url-form > div, .image-form { display: flex; gap: 8px; align-items: center; }
-.url-form input { width: 100%; min-width: 420px; }
+.url-form > div { min-width: 0; }
+.url-form input { width: 100%; min-width: 0; flex: 1 1 auto; }
+.url-form button { flex: 0 0 auto; white-space: nowrap; }
 .image-form label { margin: 0; }
 input { padding: 11px 12px; border: 1px solid #ded8ce; border-radius: 9px; background: #fff; font: inherit; }
 button { padding: 11px 14px; border: 0; border-radius: 9px; background: #292a26; color: #fff; font: inherit; font-size: 13px; font-weight: 750; cursor: pointer; }
