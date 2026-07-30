@@ -104,7 +104,7 @@ def test_logged_in_admin_dashboard_uses_platform_logo_for_url_task(tmp_path: Pat
 
     assert response.status_code == 200
     assert 'class="task-icon task-icon-url platform-logo platform-xiaoyuzhou"' in response.text
-    assert "platform-icon-xiaoyuzhou" in response.text
+    assert 'class="platform-icon-img" src="/static/platform-icons/xiaoyuzhou.svg"' in response.text
     assert '>链<' not in response.text
 
 
