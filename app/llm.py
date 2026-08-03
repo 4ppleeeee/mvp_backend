@@ -5,7 +5,7 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.config import Settings
-from app.schemas import Category, STANDARD_TAGS
+from app.schemas import Category, ChatUiResponse, STANDARD_TAGS
 
 
 class SourceAnalysis(BaseModel):
@@ -108,7 +108,45 @@ class OllamaLlmClient:
             return {"answer": "暂时没有足够资料生成推荐。", "used_source_ids": []}
         return data
 
-    async def _chat_json(self, content: str, *, images: list[str] | None = None) -> Any:
+    async def generate_chat_ui(
+        self,
+        *,
+        message: str,
+        answer: str,
+        contexts: list[dict],
+    ) -> ChatUiResponse:
+        content = (
+            "你是 TripGuard 的旅行 UI Agent。请直接生成给手机客户端的最终 ChatUiResponse JSON。"
+            "不要输出 Markdown、解释文字或代码。"
+            "允许的 event.type 只有 assistant_text, itinerary_card, place_card, evidence_card。"
+            "assistant_text 用于简短自然语言回答；其余 event 是交互卡片。"
+            "只能使用资料上下文中出现的 source_id 和 evidence_id；"
+            "没有 evidence_id 时，不得声称 grounding.kind 是 knowledge_base。"
+            "action 只能使用：itinerary_card 的 add_itinerary，place_card 的 add_slot 或 refresh_places，"
+            "evidence_card 的 toggle_evidence。不得虚构地点、价格、营业时间或引用。"
+            "event_id 必须在本次响应内唯一。"
+            "\n\n"
+            f"用户问题：{message}\n"
+            f"已有旅行回答：{answer}\n"
+            f"可用资料上下文：{json.dumps(contexts, ensure_ascii=False)}"
+        )
+        data = await self._chat_json(
+            content,
+            response_format=ChatUiResponse.model_json_schema(),
+        )
+        return _coerce_model(
+            ChatUiResponse,
+            data,
+            fallback=ChatUiResponse(message_id="", events=[]),
+        )
+
+    async def _chat_json(
+        self,
+        content: str,
+        *,
+        images: list[str] | None = None,
+        response_format: object = "json",
+    ) -> Any:
         url = f"{self._settings.llm_base_url.rstrip('/')}/api/chat"
         user_message: dict[str, Any] = {"role": "user", "content": content}
         if images:
@@ -121,7 +159,7 @@ class OllamaLlmClient:
             ],
             "stream": False,
             "think": False,
-            "format": "json",
+            "format": response_format,
             "options": {
                 "temperature": 0.1,
                 "num_predict": self._settings.llm_max_tokens,

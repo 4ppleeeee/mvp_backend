@@ -10,6 +10,7 @@ from app.config import Settings
 from app.llm import OllamaLlmClient, SourceAnalysis, TravelQuery, normalize_analysis
 from app.main import create_app
 from app.rag import RetrievedEvidence
+from app.schemas import ChatUiEvent, ChatUiResponse
 
 
 class FakeLlmClient:
@@ -63,6 +64,26 @@ class FakeLlmClient:
             location_name="武康路",
             normalized_tags=["咖啡", "甜品", "拍照好看"],
             raw_tags=["citywalk"],
+        )
+
+
+class DirectUiLlmClient(FakeLlmClient):
+    async def generate_chat_ui(self, **_: object) -> ChatUiResponse:
+        return ChatUiResponse(
+            message_id="model_message",
+            events=[
+                ChatUiEvent(
+                    event_id="model_text",
+                    type="assistant_text",
+                    text="这是模型直接生成的最终卡片协议。",
+                ),
+                ChatUiEvent(
+                    event_id="model_place",
+                    type="place_card",
+                    title="模型选择的表参道下午茶",
+                    summary="卡片 type 和内容来自模型输出。",
+                ),
+            ],
         )
 
 
@@ -499,6 +520,18 @@ def test_chat_returns_itinerary_place_and_evidence_events(tmp_path: Path) -> Non
         "end_seconds": 27.0,
     }
     assert events[3]["excerpt"] == "表参道下午茶需要排队。"
+
+
+def test_chat_uses_model_generated_ui_protocol_after_backend_validation(tmp_path: Path) -> None:
+    client = make_client(tmp_path, DirectUiLlmClient())
+
+    response = client.post("/chat", json={"message": "东京下午茶怎么安排"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["message_id"] == "model_message"
+    assert [event["type"] for event in payload["events"]] == ["assistant_text", "place_card"]
+    assert payload["events"][1]["title"] == "模型选择的表参道下午茶"
 
 
 def test_chat_refresh_action_excludes_the_current_place(tmp_path: Path) -> None:

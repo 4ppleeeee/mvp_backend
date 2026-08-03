@@ -568,6 +568,68 @@ def create_app(
                 )
         return events
 
+    async def build_model_chat_ui(
+        request: ChatRecommendRequest,
+        recommendation: ChatRecommendResponse,
+        sources_by_id: dict[str, TravelSource],
+        retrieved_by_source: dict[str, object],
+    ) -> ChatUiResponse | None:
+        generate_ui = getattr(client, "generate_chat_ui", None)
+        if not callable(generate_ui):
+            return None
+        contexts = []
+        evidence_ids_by_source: dict[str, set[str]] = {}
+        for source_id, source in sources_by_id.items():
+            evidence = retrieved_by_source.get(source_id)
+            if evidence is not None:
+                evidence_ids_by_source[source_id] = {str(evidence.evidence_id)}
+            contexts.append(
+                {
+                    "source_id": source_id,
+                    "title": source.title,
+                    "destination": source.destination,
+                    "category": source.category,
+                    "normalized_tags": source.normalized_tags,
+                    "evidence_id": getattr(evidence, "evidence_id", None),
+                    "evidence_text": getattr(evidence, "text", None),
+                }
+            )
+        try:
+            candidate = await generate_ui(
+                message=request.message,
+                answer=recommendation.answer,
+                contexts=contexts,
+            )
+        except Exception:
+            logger.exception("model-generated chat UI failed")
+            return None
+        if not isinstance(candidate, ChatUiResponse) or not candidate.message_id or not candidate.events:
+            return None
+        if len({event.event_id for event in candidate.events}) != len(candidate.events):
+            return None
+        allowed_actions = {
+            "itinerary_card": {"add_itinerary"},
+            "place_card": {"add_slot", "refresh_places"},
+            "evidence_card": {"toggle_evidence"},
+            "assistant_text": set(),
+        }
+        for event in candidate.events:
+            if not event.event_id or event.type not in allowed_actions:
+                return None
+            if any(action.action_id not in allowed_actions[event.type] for action in event.actions):
+                return None
+            grounding = event.grounding
+            if grounding is None:
+                continue
+            if grounding.kind == "knowledge_base":
+                if grounding.source_id not in sources_by_id:
+                    return None
+                if grounding.evidence_id not in evidence_ids_by_source.get(grounding.source_id, set()):
+                    return None
+            elif grounding.source_id is not None or grounding.evidence_id is not None:
+                return None
+        return candidate
+
     @app.post("/chat/recommend", response_model=ChatRecommendResponse)
     async def recommend(request: ChatRecommendRequest, session: Session = Depends(get_session)) -> ChatRecommendResponse:
         recommendation, _, _ = await build_recommendation(request, session)
@@ -576,6 +638,9 @@ def create_app(
     @app.post("/chat", response_model=ChatUiResponse, response_model_exclude_none=True)
     async def chat(request: ChatRecommendRequest, session: Session = Depends(get_session)) -> ChatUiResponse:
         recommendation, sources_by_id, retrieved_by_source = await build_recommendation(request, session)
+        model_ui = await build_model_chat_ui(request, recommendation, sources_by_id, retrieved_by_source)
+        if model_ui is not None:
+            return model_ui
         return ChatUiResponse(
             message_id="msg_current",
             events=build_chat_events(recommendation, sources_by_id, retrieved_by_source),
