@@ -1,7 +1,10 @@
 from pathlib import Path
 import asyncio
+import threading
+import time
 
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from app.config import Settings
 from app.llm import OllamaLlmClient, SourceAnalysis, TravelQuery, normalize_analysis
@@ -92,6 +95,9 @@ class RetrievedEvidenceRagIndex:
                 evidence_id="evd_test_evidence",
                 text=self.text,
                 score=1.0,
+                segment_index=4,
+                start_seconds=12.5,
+                end_seconds=27.0,
             )
         ]
 
@@ -117,22 +123,47 @@ class MixedSourceRetrievedEvidenceRagIndex:
         ]
 
 
-def make_client(
+class BlockingRetrievedEvidenceRagIndex:
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.completed = threading.Event()
+        self.retrieve_thread_id: int | None = None
+
+    def retrieve(self, query: str, *, allowed_source_ids: set[str]) -> list[RetrievedEvidence]:
+        self.retrieve_thread_id = threading.get_ident()
+        self.entered.set()
+        time.sleep(0.15)
+        self.completed.set()
+        return [
+            RetrievedEvidence(
+                source_id=next(iter(allowed_source_ids)),
+                evidence_id="evd_blocking",
+                text="线程池中的检索片段。",
+                score=1.0,
+            )
+        ]
+
+
+def make_app(
     tmp_path: Path,
     llm_client: object | None = None,
     rag_index: object | None = None,
-) -> TestClient:
+) -> object:
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'tripguard-test.db'}",
         uploads_dir=str(tmp_path / "uploads"),
         llm_base_url="http://127.0.0.1:11434/v1",
         llm_model="gemma4:latest",
     )
-    if rag_index is None:
-        app = create_app(settings=settings, llm_client=llm_client or FakeLlmClient())
-    else:
-        app = create_app(settings=settings, llm_client=llm_client or FakeLlmClient(), rag_index=rag_index)
-    return TestClient(app)
+    return create_app(settings=settings, llm_client=llm_client or FakeLlmClient(), rag_index=rag_index)
+
+
+def make_client(
+    tmp_path: Path,
+    llm_client: object | None = None,
+    rag_index: object | None = None,
+) -> TestClient:
+    return TestClient(make_app(tmp_path, llm_client=llm_client, rag_index=rag_index))
 
 
 def test_health_reports_backend_and_model(tmp_path: Path) -> None:
@@ -448,7 +479,51 @@ def test_recommend_passes_retrieved_evidence_not_whole_source(tmp_path: Path) ->
     assert response.status_code == 200
     assert rag_index.queries == [("东京下午茶", {source_id})]
     assert llm.contexts[0]["body_text"] == "表参道下午茶需要排队。"
+    assert llm.contexts[0]["segment_index"] == 4
+    assert llm.contexts[0]["start_seconds"] == 12.5
+    assert llm.contexts[0]["end_seconds"] == 27.0
     assert response.json()["used_sources"][0]["source_id"] == source_id
+
+
+def test_recommend_runs_blocking_rag_retrieval_off_the_event_loop(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        llm = FakeLlmClient()
+        app = make_app(tmp_path, llm_client=llm)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            saved = await client.post(
+                "/sources/collect",
+                json={
+                    "input_type": "url",
+                    "url": "https://xhslink.com/example",
+                    "title": "东京表参道咖啡攻略",
+                    "body_text": "SQL 候选资料的完整正文。",
+                    "source_platform": "xhs",
+                },
+            )
+            assert saved.status_code == 201
+
+            rag_index = BlockingRetrievedEvidenceRagIndex()
+            app.state.rag_index = rag_index
+            event_loop_progressed = asyncio.Event()
+
+            async def observe_event_loop() -> None:
+                while not rag_index.entered.is_set():
+                    await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                event_loop_progressed.set()
+
+            response_task = asyncio.create_task(client.post("/chat/recommend", json={"message": "东京下午茶"}))
+            sentinel_task = asyncio.create_task(observe_event_loop())
+            await asyncio.to_thread(rag_index.entered.wait)
+            await event_loop_progressed.wait()
+
+            assert not rag_index.completed.is_set()
+            response = await response_task
+            await sentinel_task
+            assert response.status_code == 200
+            assert rag_index.retrieve_thread_id != threading.get_ident()
+
+    asyncio.run(exercise())
 
 
 def test_recommend_falls_back_when_retrieval_contains_outside_sql_candidate(tmp_path: Path) -> None:

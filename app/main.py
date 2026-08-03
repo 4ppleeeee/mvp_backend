@@ -4,6 +4,7 @@ import logging
 
 from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, status
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
@@ -69,20 +70,38 @@ def create_app(
         with Session(engine) as session:
             yield session
 
-    def sync_rag_source(session: Session, source_id: str) -> None:
+    def sync_rag_source(source_id_or_session: str | Session, source_id: str | None = None) -> None:
+        """Synchronize a committed source using a Session owned by this worker.
+
+        Admin review historically passes its request Session as the first argument;
+        accept that shape while deliberately never using the Session off its owner
+        thread. New callers pass only the source id.
+        """
+        resolved_source_id = source_id if isinstance(source_id, str) else (
+            source_id_or_session if isinstance(source_id_or_session, str) else None
+        )
         if index is None:
             return
+        if resolved_source_id is None:
+            logger.warning("RAG source sync skipped without a source id")
+            return
         try:
-            if sync_source(session, index, source_id):
-                session.commit()
+            with Session(engine) as rag_session:
+                try:
+                    if sync_source(rag_session, index, resolved_source_id):
+                        rag_session.commit()
+                except Exception:
+                    rag_session.rollback()
+                    raise
         except Exception:
-            session.rollback()
-            logger.exception("RAG source sync failed", extra={"source_id": source_id})
+            logger.exception("RAG source sync failed", extra={"source_id": resolved_source_id})
 
     def sync_completed_job_source(session: Session, job: IngestionJob) -> None:
         session.refresh(job)
         if job.status == "succeeded" and job.source_id:
-            sync_rag_source(session, job.source_id)
+            sync_rag_source(job.source_id)
+
+    app.state.sync_rag_source = sync_rag_source
 
     def run_ingestion(job_id: str) -> None:
         with Session(engine) as session:
@@ -318,7 +337,7 @@ def create_app(
         session.add(source)
         session.commit()
         session.refresh(source)
-        sync_rag_source(session, source.source_id)
+        await run_in_threadpool(sync_rag_source, source.source_id)
         return CollectSourceResponse(saved=True, source=to_card(source))
 
     @app.post("/sources/collect", response_model=CollectSourceResponse, status_code=status.HTTP_201_CREATED)
@@ -347,7 +366,7 @@ def create_app(
         session.add(source)
         session.commit()
         session.refresh(source)
-        sync_rag_source(session, source.source_id)
+        await run_in_threadpool(sync_rag_source, source.source_id)
         return CollectSourceResponse(saved=True, source=to_card(source))
 
     @app.get("/sources", response_model=SourceListResponse)
@@ -394,7 +413,8 @@ def create_app(
         rag_index = app.state.rag_index
         if rag_index is not None and by_id:
             try:
-                retrieved_evidence = rag_index.retrieve(
+                retrieved_evidence = await run_in_threadpool(
+                    rag_index.retrieve,
                     request.message,
                     allowed_source_ids=set(by_id),
                 )
@@ -403,6 +423,9 @@ def create_app(
                         {
                             "source_id": evidence.source_id,
                             "evidence_id": evidence.evidence_id,
+                            "segment_index": evidence.segment_index,
+                            "start_seconds": evidence.start_seconds,
+                            "end_seconds": evidence.end_seconds,
                             "title": by_id[evidence.source_id].title,
                             "body_text": evidence.text,
                             "original_url": by_id[evidence.source_id].original_url,

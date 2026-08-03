@@ -1,8 +1,16 @@
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock, RLock
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - the deployed and supported dev hosts are Unix.
+    fcntl = None
+
 from llama_index.core import Document, StorageContext, VectorStoreIndex, load_index_from_storage
 from llama_index.core.embeddings import BaseEmbedding, MockEmbedding
-from llama_index.core.schema import MetadataMode
+from llama_index.core.schema import MetadataMode, NodeRelationship, RelatedNodeInfo, TextNode
 from llama_index.core.vector_stores import FilterOperator, MetadataFilter, MetadataFilters
 from llama_index.embeddings.ollama import OllamaEmbedding
 from sqlmodel import Session, select
@@ -17,13 +25,21 @@ class RetrievedEvidence:
     evidence_id: str
     text: str
     score: float
+    segment_index: int | None = None
+    start_seconds: float | None = None
+    end_seconds: float | None = None
 
 
 class RagIndex:
+    _persist_locks_guard = Lock()
+    _persist_locks: dict[Path, object] = {}
+
     def __init__(self, *, persist_dir: Path, embedding_model: BaseEmbedding, top_k: int) -> None:
-        self._persist_dir = persist_dir
+        self._persist_dir = persist_dir.resolve()
         self._embedding_model = embedding_model
         self._top_k = top_k
+        self._persist_lock = self._lock_for_persist_dir(self._persist_dir)
+        self._advisory_lock_path = self._persist_dir.parent / f".{self._persist_dir.name}.lock"
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RagIndex":
@@ -45,18 +61,22 @@ class RagIndex:
         )
 
     def upsert_source(self, source: TravelSource, evidence: SourceEvidence) -> None:
-        index = self._load_index()
-        try:
-            index.delete_ref_doc(source.source_id, delete_from_docstore=True)
-        except ValueError:
-            pass
-        index.insert(build_source_document(source, evidence))
-        self._persist(index)
+        with self._locked():
+            index = self._load_index()
+            try:
+                index.delete_ref_doc(source.source_id, delete_from_docstore=True)
+            except ValueError:
+                pass
+            index.insert_nodes(build_source_nodes(source, evidence))
+            self._persist(index)
 
     def retrieve(self, query: str, *, allowed_source_ids: set[str]) -> list[RetrievedEvidence]:
-        if not allowed_source_ids or not self._has_persisted_index():
+        if not allowed_source_ids:
             return []
-        index = self._load_index()
+        with self._locked():
+            if not self._has_persisted_index():
+                return []
+            index = self._load_index()
         filters = MetadataFilters(
             filters=[
                 MetadataFilter(
@@ -73,9 +93,34 @@ class RagIndex:
                 evidence_id=node.node.metadata["evidence_id"],
                 text=node.node.get_content(metadata_mode=MetadataMode.NONE),
                 score=float(node.score or 0),
+                segment_index=node.node.metadata.get("segment_index"),
+                start_seconds=node.node.metadata.get("start_seconds"),
+                end_seconds=node.node.metadata.get("end_seconds"),
             )
             for node in nodes
         ][: self._top_k]
+
+    @classmethod
+    def _lock_for_persist_dir(cls, persist_dir: Path) -> object:
+        with cls._persist_locks_guard:
+            lock = cls._persist_locks.get(persist_dir)
+            if lock is None:
+                lock = RLock()
+                cls._persist_locks[persist_dir] = lock
+            return lock
+
+    @contextmanager
+    def _locked(self):
+        with self._persist_lock:
+            if fcntl is None:
+                raise RuntimeError("RAG persistent indexes require Unix advisory file locking")
+            self._advisory_lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._advisory_lock_path.open("a+") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _load_index(self) -> VectorStoreIndex:
         if self._has_persisted_index():
@@ -147,3 +192,56 @@ def build_source_document(source: TravelSource, evidence: SourceEvidence) -> Doc
             "segment_count": len(evidence.segments),
         },
     )
+
+
+def build_source_nodes(source: TravelSource, evidence: SourceEvidence) -> list[TextNode]:
+    metadata = _source_metadata(source, evidence)
+    nodes = [
+        _source_node(
+            source.source_id,
+            f"{source.source_id}:{evidence.evidence_id}:segment:{segment_index}",
+            text,
+            {
+                **metadata,
+                "segment_index": segment_index,
+                "start_seconds": segment.get("start_seconds"),
+                "end_seconds": segment.get("end_seconds"),
+            },
+        )
+        for segment_index, segment in enumerate(evidence.segments)
+        if isinstance(segment.get("text"), str) and (text := segment["text"].strip())
+    ]
+    if nodes:
+        return nodes
+    return [
+        _source_node(
+            source.source_id,
+            f"{source.source_id}:{evidence.evidence_id}:full",
+            evidence.full_text,
+            metadata,
+        )
+    ]
+
+
+def _source_node(source_id: str, node_id: str, text: str, metadata: dict[str, object]) -> TextNode:
+    return TextNode(
+        id_=node_id,
+        text=text,
+        metadata=metadata,
+        relationships={NodeRelationship.SOURCE: RelatedNodeInfo(node_id=source_id)},
+    )
+
+
+def _source_metadata(source: TravelSource, evidence: SourceEvidence) -> dict[str, object]:
+    return {
+        "source_id": source.source_id,
+        "evidence_id": evidence.evidence_id,
+        "title": source.title,
+        "original_url": source.original_url,
+        "destination": source.destination,
+        "category": source.category,
+        "normalized_tags": source.normalized_tags,
+        "origin": evidence.origin,
+        "language": evidence.language,
+        "segment_count": len(evidence.segments),
+    }

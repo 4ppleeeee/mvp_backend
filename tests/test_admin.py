@@ -6,10 +6,15 @@ from sqlmodel import Session, select
 
 from app.config import Settings
 from app.main import create_app
-from app.models import IngestionJob, IngestionReview, TravelSource
+from app.models import IngestionJob, IngestionReview, SourceEvidence, TravelSource
 
 
-def configured_client(tmp_path: Path, *, raise_server_exceptions: bool = True) -> TestClient:
+def configured_client(
+    tmp_path: Path,
+    *,
+    raise_server_exceptions: bool = True,
+    rag_index: object | None = None,
+) -> TestClient:
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'admin.db'}",
         uploads_dir=str(tmp_path / "uploads"),
@@ -17,7 +22,10 @@ def configured_client(tmp_path: Path, *, raise_server_exceptions: bool = True) -
         admin_password_hash=PasswordHash.recommended().hash("test-password"),
         admin_session_secret="test-session-secret",
     )
-    return TestClient(create_app(settings=settings), raise_server_exceptions=raise_server_exceptions)
+    return TestClient(
+        create_app(settings=settings, rag_index=rag_index),
+        raise_server_exceptions=raise_server_exceptions,
+    )
 
 
 class RecordingExecutor:
@@ -26,6 +34,23 @@ class RecordingExecutor:
 
     def submit(self, function: object, *args: object) -> None:
         self.calls.append((function, args))
+
+
+class RecordingRagIndex:
+    def __init__(self) -> None:
+        self.indexed: list[tuple[str, str, str]] = []
+
+    def upsert_source(self, source: TravelSource, evidence: SourceEvidence) -> None:
+        self.indexed.append((source.source_id, evidence.evidence_id, evidence.full_text))
+
+
+class FailingRagIndex:
+    def __init__(self) -> None:
+        self.attempted_source_ids: list[str] = []
+
+    def upsert_source(self, source: TravelSource, evidence: SourceEvidence) -> None:
+        self.attempted_source_ids.append(source.source_id)
+        raise RuntimeError("index unavailable")
 
 
 def create_saved_source(client: TestClient) -> str:
@@ -324,6 +349,76 @@ def test_admin_can_accept_reviewed_ingestion(tmp_path: Path) -> None:
         assert session.exec(select(TravelSource)).first() is not None
         review = session.exec(select(IngestionReview).where(IngestionReview.job_id == job_id)).one()
         assert review.decision == "accept"
+
+
+def test_admin_accept_syncs_saved_source_to_rag(tmp_path: Path) -> None:
+    rag_index = RecordingRagIndex()
+    client = configured_client(tmp_path, rag_index=rag_index)
+    with Session(client.app.state.engine) as session:
+        job = IngestionJob(
+            input_type="url",
+            original_url="https://youtu.be/abcdefghijk",
+            source_platform="youtube",
+            media_type="video",
+            status="succeeded",
+            stage="succeeded",
+            ingest_decision="review",
+            analysis_json={
+                "title": "淄博博山菜探店",
+                "body_text": "淄博博山菜探店体验。",
+                "destination": "淄博",
+                "category": "eat",
+            },
+            evidence_text="我们现在在博山吃博山菜。",
+            evidence_origin="asr",
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        job_id = job.job_id
+
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+    response = client.post(f"/admin/ingestions/{job_id}/review", data={"decision": "accept"}, follow_redirects=False)
+
+    assert response.status_code == 303
+    with Session(client.app.state.engine) as session:
+        saved_job = session.exec(select(IngestionJob).where(IngestionJob.job_id == job_id)).one()
+        saved_evidence = session.exec(
+            select(SourceEvidence).where(SourceEvidence.source_id == saved_job.source_id)
+        ).one()
+    assert rag_index.indexed == [
+        (saved_job.source_id, saved_evidence.evidence_id, saved_evidence.full_text)
+    ]
+
+
+def test_admin_accept_preserves_saved_source_when_rag_sync_fails(tmp_path: Path) -> None:
+    rag_index = FailingRagIndex()
+    client = configured_client(tmp_path, rag_index=rag_index)
+    with Session(client.app.state.engine) as session:
+        job = IngestionJob(
+            input_type="url",
+            original_url="https://youtu.be/abcdefghijk",
+            source_platform="youtube",
+            media_type="video",
+            status="succeeded",
+            stage="succeeded",
+            ingest_decision="review",
+            analysis_json={"title": "博山菜", "body_text": "博山菜探店", "destination": "淄博", "category": "eat"},
+            evidence_text="我们现在在博山吃博山菜。",
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        job_id = job.job_id
+
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+    response = client.post(f"/admin/ingestions/{job_id}/review", data={"decision": "accept"}, follow_redirects=False)
+
+    assert response.status_code == 303
+    with Session(client.app.state.engine) as session:
+        saved_job = session.exec(select(IngestionJob).where(IngestionJob.job_id == job_id)).one()
+        assert session.exec(select(TravelSource).where(TravelSource.source_id == saved_job.source_id)).one()
+    assert rag_index.attempted_source_ids == [saved_job.source_id]
 
 
 def test_admin_can_accept_legacy_review_without_saved_evidence_metadata(tmp_path: Path) -> None:

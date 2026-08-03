@@ -250,11 +250,14 @@ def create_admin_router(settings: Settings) -> APIRouter:
         ensure_logged_in(request)
         with Session(request.app.state.engine) as session:
             try:
-                IngestionService(session=session, llm_client=object(), pipeline=object()).approve_review(
+                job = IngestionService(session=session, llm_client=object(), pipeline=object()).approve_review(
                     job_id, decision=decision, reviewer=request.session.get("admin_username"), reason=reason
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+            sync_rag_source = getattr(request.app.state, "sync_rag_source", None)
+            if job.source_id and callable(sync_rag_source):
+                sync_rag_source(session, job.source_id)
         return RedirectResponse(f"/admin/ingestions/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
 
     @router.get("/ingestions/{job_id}/fragment")

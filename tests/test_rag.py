@@ -1,5 +1,11 @@
+import os
+from contextlib import contextmanager
+from multiprocessing import get_context
+from pathlib import Path
+from threading import Barrier, BrokenBarrierError, Event, Thread
+
 import pytest
-from llama_index.core.embeddings import BaseEmbedding
+from llama_index.core.embeddings import BaseEmbedding, MockEmbedding
 from sqlmodel import Session
 
 from app.config import Settings
@@ -30,6 +36,101 @@ class CandidateRankingEmbedding(BaseEmbedding):
 
     async def _aget_text_embedding(self, text: str) -> list[float]:
         return self._get_text_embedding(text)
+
+
+class BlockingQueryEmbedding(BaseEmbedding):
+    """Test-only embedding that holds the retriever after its snapshot is loaded."""
+
+    embed_dim: int
+
+    def __init__(self, *, query_started: Event, allow_query_to_finish: Event) -> None:
+        super().__init__(embed_dim=2)
+        self._query_started = query_started
+        self._allow_query_to_finish = allow_query_to_finish
+
+    @classmethod
+    def class_name(cls) -> str:
+        return "BlockingQueryEmbedding"
+
+    def _get_query_embedding(self, query: str) -> list[float]:
+        self._query_started.set()
+        if not self._allow_query_to_finish.wait(timeout=5):
+            raise TimeoutError("test did not release query embedding")
+        return [1.0, 0.0]
+
+    async def _aget_query_embedding(self, query: str) -> list[float]:
+        return self._get_query_embedding(query)
+
+    def _get_text_embedding(self, text: str) -> list[float]:
+        return [1.0, 0.0]
+
+    async def _aget_text_embedding(self, text: str) -> list[float]:
+        return self._get_text_embedding(text)
+
+
+class ProcessLoadBarrierRagIndex(RagIndex):
+    """Test-only index that makes unsafe concurrent snapshot loads deterministic."""
+
+    def __init__(self, *, load_barrier, use_file_lock: bool, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._load_barrier = load_barrier
+        self._use_file_lock = use_file_lock
+
+    def _load_index(self):
+        snapshot = super()._load_index()
+        try:
+            self._load_barrier.wait(timeout=0.2)
+        except BrokenBarrierError:
+            # A process-wide lock prevents the second writer reaching this
+            # test-only gate; continuing is then the expected safe path.
+            pass
+        return snapshot
+
+    @contextmanager
+    def _locked(self):
+        if self._use_file_lock:
+            with super()._locked():
+                yield
+        else:
+            # Used only by the explicit red-proof run below; the normal test
+            # delegates to production's process and thread locking.
+            with self._persist_lock:
+                yield
+
+
+def upsert_source_in_process(
+    persist_dir: str,
+    source_id: str,
+    evidence_id: str,
+    text: str,
+    load_barrier,
+    ready,
+    start,
+) -> None:
+    index = ProcessLoadBarrierRagIndex(
+        persist_dir=Path(persist_dir),
+        embedding_model=MockEmbedding(embed_dim=8),
+        top_k=6,
+        load_barrier=load_barrier,
+        use_file_lock=os.environ.get("TRIPGUARD_TEST_DISABLE_FILE_LOCK") != "1",
+    )
+    source = TravelSource(
+        source_id=source_id,
+        title=source_id,
+        body_text=text,
+        destination="东京",
+        category="eat",
+    )
+    evidence = SourceEvidence(
+        evidence_id=evidence_id,
+        source_id=source_id,
+        origin="article",
+        full_text=text,
+    )
+    ready.set()
+    if not start.wait(timeout=5):
+        raise RuntimeError("parent did not release process")
+    index.upsert_source(source, evidence)
 
 
 def test_document_keeps_source_and_evidence_provenance() -> None:
@@ -102,6 +203,188 @@ def test_upsert_replaces_existing_source_nodes_and_survives_reload(tmp_path) -> 
     assert [(item.evidence_id, item.text) for item in results] == [("evd_new", "新内容。")]
 
 
+def test_segment_nodes_keep_timecode_provenance_replace_source_and_survive_reload(tmp_path) -> None:
+    source = TravelSource(
+        source_id="src_video_tokyo",
+        title="东京咖啡探店视频",
+        body_text="完整视频转录。",
+        destination="东京",
+        category="drink",
+    )
+    old_evidence = SourceEvidence(
+        evidence_id="evd_video_old",
+        source_id=source.source_id,
+        origin="asr",
+        language="zh",
+        full_text="完整视频转录。",
+        segments=[
+            {"start_seconds": 12.5, "end_seconds": 18.0, "text": "表参道咖啡店十点开门。"},
+            {"start_seconds": 18.0, "end_seconds": 25.25, "text": "周末建议提前取号。"},
+            {"start_seconds": 25.25, "end_seconds": 26.0, "text": "   "},
+        ],
+    )
+    replacement_evidence = SourceEvidence(
+        evidence_id="evd_video_new",
+        source_id=source.source_id,
+        origin="asr",
+        language="zh",
+        full_text="更新后的完整视频转录。",
+        segments=[
+            {"start_seconds": 30.0, "end_seconds": 36.0, "text": "更新后只保留这一段。"},
+        ],
+    )
+    index = RagIndex.for_test(tmp_path)
+
+    index.upsert_source(source, old_evidence)
+
+    retrieved = index.retrieve("东京咖啡排队", allowed_source_ids={source.source_id})
+    assert {
+        (
+            item.source_id,
+            item.evidence_id,
+            item.text,
+            item.segment_index,
+            item.start_seconds,
+            item.end_seconds,
+        )
+        for item in retrieved
+    } == {
+        (source.source_id, old_evidence.evidence_id, "表参道咖啡店十点开门。", 0, 12.5, 18.0),
+        (source.source_id, old_evidence.evidence_id, "周末建议提前取号。", 1, 18.0, 25.25),
+    }
+
+    index.upsert_source(source, replacement_evidence)
+
+    reloaded = RagIndex.for_test(tmp_path)
+    replacement_results = reloaded.retrieve("东京咖啡排队", allowed_source_ids={source.source_id})
+    assert [
+        (
+            item.evidence_id,
+            item.text,
+            item.segment_index,
+            item.start_seconds,
+            item.end_seconds,
+        )
+        for item in replacement_results
+    ] == [(replacement_evidence.evidence_id, "更新后只保留这一段。", 0, 30.0, 36.0)]
+
+
+def test_concurrent_upserts_preserve_all_sources_after_reload(tmp_path, monkeypatch) -> None:
+    """Two writers that load the same snapshot must not overwrite one another."""
+    index = RagIndex.for_test(tmp_path)
+    source_a = TravelSource(
+        source_id="src_concurrent_a",
+        title="并发资料 A",
+        body_text="A",
+        destination="东京",
+        category="eat",
+    )
+    source_b = TravelSource(
+        source_id="src_concurrent_b",
+        title="并发资料 B",
+        body_text="B",
+        destination="东京",
+        category="eat",
+    )
+    evidence_a = SourceEvidence(
+        evidence_id="evd_concurrent_a",
+        source_id=source_a.source_id,
+        origin="article",
+        full_text="并发写入资料 A。",
+    )
+    evidence_b = SourceEvidence(
+        evidence_id="evd_concurrent_b",
+        source_id=source_b.source_id,
+        origin="article",
+        full_text="并发写入资料 B。",
+    )
+    both_writers_ready = Barrier(2)
+    original_load_index = index._load_index
+
+    def synchronized_load_index():
+        try:
+            both_writers_ready.wait(timeout=0.2)
+        except BrokenBarrierError:
+            # With the lock in place, the second writer cannot enter this hook
+            # until the first transaction has persisted. That is the expected
+            # serialized path, so let the timed-out first writer proceed.
+            pass
+        return original_load_index()
+
+    monkeypatch.setattr(index, "_load_index", synchronized_load_index)
+    errors: list[BaseException] = []
+    writers_ready = [Event(), Event()]
+    start_writers = Event()
+
+    def upsert(source: TravelSource, evidence: SourceEvidence, ready: Event) -> None:
+        try:
+            ready.set()
+            assert start_writers.wait(timeout=1)
+            index.upsert_source(source, evidence)
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    writers = [
+        Thread(target=upsert, args=(source_a, evidence_a, writers_ready[0])),
+        Thread(target=upsert, args=(source_b, evidence_b, writers_ready[1])),
+    ]
+    for writer in writers:
+        writer.start()
+    assert all(ready.wait(timeout=1) for ready in writers_ready)
+    start_writers.set()
+    for writer in writers:
+        writer.join(timeout=5)
+
+    assert not any(writer.is_alive() for writer in writers)
+    assert errors == []
+
+    reloaded = RagIndex.for_test(tmp_path)
+    results = reloaded.retrieve(
+        "并发写入资料",
+        allowed_source_ids={source_a.source_id, source_b.source_id},
+    )
+
+    assert {(item.source_id, item.evidence_id, item.text) for item in results} == {
+        (source_a.source_id, evidence_a.evidence_id, evidence_a.full_text),
+        (source_b.source_id, evidence_b.evidence_id, evidence_b.full_text),
+    }
+
+
+def test_multiprocess_upserts_preserve_all_sources_after_reload(tmp_path) -> None:
+    context = get_context("spawn")
+    load_barrier = context.Barrier(2)
+    start = context.Event()
+    ready_events = [context.Event(), context.Event()]
+    sources = [
+        ("src_process_a", "evd_process_a", "跨进程写入资料 A。"),
+        ("src_process_b", "evd_process_b", "跨进程写入资料 B。"),
+    ]
+    workers = [
+        context.Process(
+            target=upsert_source_in_process,
+            args=(str(tmp_path), *source, load_barrier, ready, start),
+        )
+        for source, ready in zip(sources, ready_events, strict=True)
+    ]
+    for worker in workers:
+        worker.start()
+    assert all(ready.wait(timeout=5) for ready in ready_events)
+    start.set()
+    for worker in workers:
+        worker.join(timeout=10)
+
+    assert not any(worker.is_alive() for worker in workers)
+    assert [worker.exitcode for worker in workers] == [0, 0]
+
+    reloaded = RagIndex.for_test(tmp_path)
+    results = reloaded.retrieve(
+        "跨进程写入资料",
+        allowed_source_ids={source_id for source_id, _, _ in sources},
+    )
+
+    assert {(item.source_id, item.evidence_id, item.text) for item in results} == set(sources)
+
+
 def test_retrieve_filters_sql_candidates_before_top_k_ranking(tmp_path) -> None:
     index = RagIndex(
         persist_dir=tmp_path,
@@ -146,6 +429,98 @@ def test_retrieve_filters_sql_candidates_before_top_k_ranking(tmp_path) -> None:
     assert [(item.source_id, item.evidence_id) for item in results] == [
         ("src_candidate", "evd_candidate"),
     ]
+
+
+def test_retrieve_releases_persist_lock_before_expensive_query_embedding(tmp_path) -> None:
+    query_started = Event()
+    allow_query_to_finish = Event()
+    index = RagIndex(
+        persist_dir=tmp_path,
+        embedding_model=BlockingQueryEmbedding(
+            query_started=query_started,
+            allow_query_to_finish=allow_query_to_finish,
+        ),
+        top_k=6,
+    )
+    existing_source = TravelSource(
+        source_id="src_snapshot",
+        title="检索快照资料",
+        body_text="初始内容",
+        destination="东京",
+        category="eat",
+    )
+    existing_evidence = SourceEvidence(
+        evidence_id="evd_snapshot",
+        source_id=existing_source.source_id,
+        origin="article",
+        full_text="检索期间仍应返回的快照内容。",
+    )
+    index.upsert_source(existing_source, existing_evidence)
+
+    retrieved: list = []
+    retrieval_errors: list[BaseException] = []
+
+    def retrieve() -> None:
+        try:
+            retrieved.extend(index.retrieve("检索快照", allowed_source_ids={existing_source.source_id}))
+        except BaseException as error:  # pragma: no cover - asserted below
+            retrieval_errors.append(error)
+
+    reader = Thread(target=retrieve)
+    reader.start()
+    assert query_started.wait(timeout=1)
+
+    new_source = TravelSource(
+        source_id="src_writer",
+        title="并行写入资料",
+        body_text="新增内容",
+        destination="东京",
+        category="eat",
+    )
+    new_evidence = SourceEvidence(
+        evidence_id="evd_writer",
+        source_id=new_source.source_id,
+        origin="article",
+        full_text="检索嵌入缓慢时也必须完成的写入。",
+    )
+    write_finished = Event()
+    write_errors: list[BaseException] = []
+
+    def upsert() -> None:
+        try:
+            index.upsert_source(new_source, new_evidence)
+            write_finished.set()
+        except BaseException as error:  # pragma: no cover - asserted below
+            write_errors.append(error)
+
+    writer = Thread(target=upsert)
+    writer.start()
+
+    # The old implementation kept this lock while `_get_query_embedding` waited.
+    assert write_finished.wait(timeout=1)
+
+    allow_query_to_finish.set()
+    reader.join(timeout=5)
+    writer.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert not writer.is_alive()
+    assert retrieval_errors == []
+    assert write_errors == []
+    assert [(item.source_id, item.evidence_id, item.text) for item in retrieved] == [
+        (existing_source.source_id, existing_evidence.evidence_id, existing_evidence.full_text),
+    ]
+
+    reloaded = RagIndex(
+        persist_dir=tmp_path,
+        embedding_model=MockEmbedding(embed_dim=2),
+        top_k=6,
+    )
+    persisted = reloaded.retrieve(
+        "并行写入资料",
+        allowed_source_ids={existing_source.source_id, new_source.source_id},
+    )
+    assert {item.source_id for item in persisted} == {existing_source.source_id, new_source.source_id}
 
 
 def test_backfill_creates_evidence_for_legacy_source_and_indexes_it(tmp_path) -> None:
