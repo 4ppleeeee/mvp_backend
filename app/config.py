@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     llm_model: str = "gemma4:latest"
     llm_max_tokens: int = 220
     request_timeout_seconds: float = 240.0
+    rag_persist_dir: str = "./data/rag"
+    rag_embedding_model: str = "nomic-embed-text"
+    rag_top_k: int = 6
     ingestion_temp_dir: str = "./ingestion-tmp"
     ingestion_max_attempts: int = 2
     ingestion_max_upload_bytes: int = 512 * 1024 * 1024
