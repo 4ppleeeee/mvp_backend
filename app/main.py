@@ -1,8 +1,12 @@
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Awaitable, Callable
+import asyncio
+import json
 import logging
 
 from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
@@ -573,8 +577,13 @@ def create_app(
         recommendation: ChatRecommendResponse,
         sources_by_id: dict[str, TravelSource],
         retrieved_by_source: dict[str, object],
+        on_text_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> ChatUiResponse | None:
         generate_ui = getattr(client, "generate_chat_ui", None)
+        stream_ui = getattr(client, "stream_chat_ui", None)
+        use_streaming_ui = on_text_delta is not None and callable(stream_ui)
+        if use_streaming_ui:
+            generate_ui = stream_ui
         if not callable(generate_ui):
             return None
         contexts = []
@@ -600,11 +609,14 @@ def create_app(
                 }
             )
         try:
-            candidate = await generate_ui(
+            arguments = dict(
                 message=request.message,
                 answer=recommendation.answer,
                 contexts=contexts,
             )
+            if use_streaming_ui:
+                arguments["on_text_delta"] = on_text_delta
+            candidate = await generate_ui(**arguments)
         except Exception:
             logger.exception("model-generated chat UI failed")
             return None
@@ -674,6 +686,68 @@ def create_app(
         return ChatUiResponse(
             message_id="msg_current",
             events=build_chat_events(recommendation, sources_by_id, retrieved_by_source),
+        )
+
+    def sse_frame(event_name: str, data: dict[str, object]) -> str:
+        payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        return f"event: {event_name}\ndata: {payload}\n\n"
+
+    @app.post("/chat/stream")
+    async def chat_stream(request: ChatRecommendRequest, session: Session = Depends(get_session)) -> StreamingResponse:
+        async def events():
+            yield sse_frame("message_start", {"message_id": "msg_pending"})
+            try:
+                recommendation, sources_by_id, retrieved_by_source = await build_recommendation(request, session)
+                text_deltas: asyncio.Queue[str] = asyncio.Queue()
+
+                async def on_text_delta(delta: str) -> None:
+                    await text_deltas.put(delta)
+
+                model_task = asyncio.create_task(
+                    build_model_chat_ui(
+                        request,
+                        recommendation,
+                        sources_by_id,
+                        retrieved_by_source,
+                        on_text_delta=on_text_delta,
+                    )
+                )
+                emitted_text = False
+                while not model_task.done() or not text_deltas.empty():
+                    try:
+                        delta = await asyncio.wait_for(text_deltas.get(), timeout=0.05)
+                    except TimeoutError:
+                        continue
+                    emitted_text = True
+                    yield sse_frame(
+                        "assistant_text_delta",
+                        {"message_id": "msg_pending", "event_id": "assistant:stream", "delta": delta},
+                    )
+                model_ui = await model_task
+                response = model_ui or ChatUiResponse(
+                    message_id="msg_current",
+                    events=build_chat_events(recommendation, sources_by_id, retrieved_by_source),
+                )
+                if not emitted_text:
+                    assistant_text = next((event.text for event in response.events if event.type == "assistant_text"), None)
+                    if assistant_text:
+                        yield sse_frame(
+                            "assistant_text_delta",
+                            {"message_id": response.message_id, "event_id": "assistant:stream", "delta": assistant_text},
+                        )
+                yield sse_frame(
+                    "surface_replace",
+                    {"response": response.model_dump(mode="json", exclude_none=True)},
+                )
+                yield sse_frame("message_done", {"message_id": response.message_id})
+            except Exception:
+                logger.exception("chat SSE stream failed")
+                yield sse_frame("error", {"message": "生成失败，请确认后端服务和 Ollama 隧道可访问。"})
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     @app.post("/chat/action", response_model=ChatUiResponse, response_model_exclude_none=True)

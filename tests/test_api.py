@@ -1,5 +1,6 @@
 from pathlib import Path
 import asyncio
+import json
 import threading
 import time
 
@@ -558,6 +559,32 @@ def test_chat_returns_itinerary_place_and_evidence_events(tmp_path: Path) -> Non
     assert events[3]["excerpt"] == "表参道下午茶需要排队。"
 
 
+def test_chat_stream_returns_real_sse_frames_and_final_surface(tmp_path: Path) -> None:
+    rag_index = RetrievedEvidenceRagIndex(text="表参道下午茶需要排队。")
+    client = make_client(tmp_path, rag_index=rag_index)
+    client.post(
+        "/sources/collect",
+        json={
+            "input_type": "url",
+            "url": "https://xhslink.com/example",
+            "title": "东京表参道咖啡攻略",
+            "body_text": "这是一篇表参道下午茶攻略。",
+            "source_platform": "xhs",
+        },
+    )
+
+    response = client.post("/chat/stream", json={"message": "东京下午茶怎么安排"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    frames = [frame for frame in response.text.split("\n\n") if frame.strip()]
+    event_names = [next(line.removeprefix("event: ") for line in frame.splitlines() if line.startswith("event: ")) for frame in frames]
+    assert event_names == ["message_start", "assistant_text_delta", "surface_replace", "message_done"]
+    final_payload = json.loads(next(line.removeprefix("data: ") for line in frames[2].splitlines() if line.startswith("data: ")))
+    assert final_payload["response"]["events"][0]["type"] == "assistant_text"
+    assert "itinerary_card" in [event["type"] for event in final_payload["response"]["events"]]
+
+
 def test_chat_uses_model_generated_ui_protocol_after_backend_validation(tmp_path: Path) -> None:
     client = make_client(tmp_path, DirectUiLlmClient())
     client.post(
@@ -824,6 +851,58 @@ def test_ollama_client_bounds_json_generation(monkeypatch, tmp_path: Path) -> No
         "temperature": 0.1,
         "num_predict": 220,
     }
+
+
+def test_ollama_client_streams_native_chat_chunks(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeStreamResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_lines(self):
+            yield '{"message":{"content":"{\\"ok\\""},"done":false}'
+            yield '{"message":{"content":":true}"},"done":true}'
+
+    class FakeStreamContext:
+        async def __aenter__(self) -> FakeStreamResponse:
+            return FakeStreamResponse()
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            captured["timeout"] = timeout
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def stream(self, method: str, url: str, json: dict) -> FakeStreamContext:
+            captured["method"] = method
+            captured["url"] = url
+            captured["json"] = json
+            return FakeStreamContext()
+
+    monkeypatch.setattr("app.llm.httpx.AsyncClient", FakeAsyncClient)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'tripguard-test.db'}",
+        uploads_dir=str(tmp_path / "uploads"),
+        llm_base_url="http://127.0.0.1:11434",
+        llm_model="gemma4:latest",
+    )
+
+    async def collect_chunks() -> list[str]:
+        return [chunk async for chunk in OllamaLlmClient(settings)._chat_text_stream("输出 JSON")]
+
+    assert asyncio.run(collect_chunks()) == ['{"ok"', ":true}"]
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
+    assert captured["json"]["stream"] is True
+    assert captured["json"]["think"] is False
 
 
 def test_ollama_client_uses_native_chat_and_disables_thinking(monkeypatch, tmp_path: Path) -> None:

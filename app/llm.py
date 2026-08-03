@@ -1,4 +1,6 @@
 import json
+import re
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -115,7 +117,50 @@ class OllamaLlmClient:
         answer: str,
         contexts: list[dict],
     ) -> ChatUiResponse:
-        content = (
+        content = self._chat_ui_prompt(message=message, answer=answer, contexts=contexts)
+        data = await self._chat_json(
+            content,
+            response_format=ChatUiResponse.model_json_schema(),
+            max_tokens=max(self._settings.llm_max_tokens, 500),
+        )
+        return _coerce_model(
+            ChatUiResponse,
+            data,
+            fallback=ChatUiResponse(message_id="", events=[]),
+        )
+
+    async def stream_chat_ui(
+        self,
+        *,
+        message: str,
+        answer: str,
+        contexts: list[dict],
+        on_text_delta: Callable[[str], Awaitable[None]],
+    ) -> ChatUiResponse:
+        content = self._chat_ui_prompt(message=message, answer=answer, contexts=contexts)
+        response_text: list[str] = []
+        text_extractor = _AssistantTextDeltaExtractor()
+        async for chunk in self._chat_text_stream(
+            content,
+            response_format=ChatUiResponse.model_json_schema(),
+            max_tokens=max(self._settings.llm_max_tokens, 500),
+        ):
+            response_text.append(chunk)
+            delta = text_extractor.feed(chunk)
+            if delta:
+                await on_text_delta(delta)
+        try:
+            data = json.loads(_extract_json_object("".join(response_text)))
+        except json.JSONDecodeError:
+            data = {}
+        return _coerce_model(
+            ChatUiResponse,
+            data,
+            fallback=ChatUiResponse(message_id="", events=[]),
+        )
+
+    def _chat_ui_prompt(self, *, message: str, answer: str, contexts: list[dict]) -> str:
+        return (
             "你是 TripGuard 的旅行 UI Agent。请直接生成给手机客户端的最终 ChatUiResponse JSON。"
             "不要输出 Markdown、解释文字或代码。"
             "当前开放的 Catalog 只有 assistant_text 和 place_card；不得生成任何其他 type、action 或 grounding。"
@@ -132,16 +177,6 @@ class OllamaLlmClient:
             f"用户问题：{message}\n"
             f"已有旅行回答：{answer}\n"
             f"可用资料上下文：{json.dumps(contexts, ensure_ascii=False)}"
-        )
-        data = await self._chat_json(
-            content,
-            response_format=ChatUiResponse.model_json_schema(),
-            max_tokens=max(self._settings.llm_max_tokens, 500),
-        )
-        return _coerce_model(
-            ChatUiResponse,
-            data,
-            fallback=ChatUiResponse(message_id="", events=[]),
         )
 
     async def _chat_json(
@@ -184,6 +219,43 @@ class OllamaLlmClient:
                     retry_message["content"] = content + self._JSON_RETRY_INSTRUCTION
                     payload["messages"][-1] = retry_message
         return {}
+
+    async def _chat_text_stream(
+        self,
+        content: str,
+        *,
+        images: list[str] | None = None,
+        response_format: object = "json",
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[str]:
+        url = f"{self._settings.llm_base_url.rstrip('/')}/api/chat"
+        user_message: dict[str, Any] = {"role": "user", "content": content}
+        if images:
+            user_message["images"] = images
+        payload = {
+            "model": self._settings.llm_model,
+            "messages": [
+                {"role": "system", "content": "只输出严格 JSON，不要输出 Markdown。"},
+                user_message,
+            ],
+            "stream": True,
+            "think": False,
+            "format": response_format,
+            "options": {
+                "temperature": 0.1,
+                "num_predict": max_tokens or self._settings.llm_max_tokens,
+            },
+        }
+        async with httpx.AsyncClient(timeout=self._settings.request_timeout_seconds) as client:
+            async with client.stream("POST", url, json=payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    content_delta = chunk.get("message", {}).get("content")
+                    if isinstance(content_delta, str) and content_delta:
+                        yield content_delta
 
 
 def normalize_analysis(analysis: SourceAnalysis) -> SourceAnalysis:
@@ -255,6 +327,62 @@ def _extract_json_object(text: str) -> str:
     if start < 0 or end <= start:
         return stripped
     return stripped[start : end + 1]
+
+
+class _AssistantTextDeltaExtractor:
+    """Extract only the first assistant_text value from an incomplete JSON response."""
+
+    _TEXT_PREFIX = re.compile(
+        r'"type"\s*:\s*"assistant_text".*?"text"\s*:\s*"',
+        re.DOTALL,
+    )
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._reading_text = False
+        self._finished = False
+        self._escape_mode: str | None = None
+        self._unicode_digits = ""
+
+    def feed(self, chunk: str) -> str:
+        if self._finished:
+            return ""
+        if not self._reading_text:
+            self._buffer += chunk
+            match = self._TEXT_PREFIX.search(self._buffer)
+            if match is None:
+                return ""
+            self._reading_text = True
+            remaining = self._buffer[match.end() :]
+            self._buffer = ""
+        else:
+            remaining = chunk
+        output: list[str] = []
+        for character in remaining:
+            if self._escape_mode == "unicode":
+                self._unicode_digits += character
+                if len(self._unicode_digits) == 4:
+                    try:
+                        output.append(chr(int(self._unicode_digits, 16)))
+                    except ValueError:
+                        output.append("\\u" + self._unicode_digits)
+                    self._unicode_digits = ""
+                    self._escape_mode = None
+                continue
+            if self._escape_mode == "escape":
+                output.append({"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f"}.get(character, character))
+                self._escape_mode = "unicode" if character == "u" else None
+                if character == "u":
+                    output.pop()
+                continue
+            if character == "\\":
+                self._escape_mode = "escape"
+            elif character == '"':
+                self._finished = True
+                break
+            else:
+                output.append(character)
+        return "".join(output)
 
 
 def _has_specific_destination(destination: str) -> bool:
