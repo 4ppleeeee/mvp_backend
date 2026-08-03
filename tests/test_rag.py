@@ -1,10 +1,12 @@
-from sqlmodel import Session
+import pytest
 from llama_index.core.embeddings import BaseEmbedding
+from sqlmodel import Session
 
 from app.config import Settings
 from app.db import create_db_engine, init_db
 from app.models import SourceEvidence, TravelSource
 from app.rag import RagIndex, backfill_sources, build_source_document
+from app import rag_backfill
 
 
 class CandidateRankingEmbedding(BaseEmbedding):
@@ -169,3 +171,42 @@ def test_backfill_creates_evidence_for_legacy_source_and_indexes_it(tmp_path) ->
     assert [(item.source_id, item.text) for item in results] == [
         ("src_legacy", "表参道的咖啡店下午需要排队。"),
     ]
+
+
+def test_backfill_sqlite_index_survives_fresh_index_reload(tmp_path) -> None:
+    engine = create_db_engine(Settings(database_url=f"sqlite:///{tmp_path / 'tripguard.db'}"))
+    init_db(engine)
+    persist_dir = tmp_path / "rag"
+    with Session(engine) as session:
+        source = TravelSource(
+            source_id="src_osaka",
+            title="大阪夜市攻略",
+            body_text="黑门市场傍晚六点前适合购买寿司。",
+            destination="大阪",
+            category="eat",
+        )
+        session.add(source)
+        session.commit()
+
+        assert backfill_sources(session, RagIndex.for_test(persist_dir)) == 1
+        session.commit()
+
+    reloaded_index = RagIndex.for_test(persist_dir)
+    results = reloaded_index.retrieve("大阪黑门市场寿司", allowed_source_ids={"src_osaka"})
+
+    assert [(item.source_id, item.text) for item in results] == [
+        ("src_osaka", "黑门市场傍晚六点前适合购买寿司。"),
+    ]
+
+
+def test_backfill_help_does_not_construct_runtime_settings(monkeypatch, capsys) -> None:
+    def fail_if_constructed(*args, **kwargs):
+        raise AssertionError("--help must not load runtime settings")
+
+    monkeypatch.setattr(rag_backfill, "Settings", fail_if_constructed)
+
+    with pytest.raises(SystemExit) as exc_info:
+        rag_backfill.main(["--help"])
+
+    assert exc_info.value.code == 0
+    assert "Backfill TripGuard evidence RAG index" in capsys.readouterr().out
