@@ -189,7 +189,7 @@ def build_source_document(source: TravelSource, evidence: SourceEvidence) -> Doc
             "normalized_tags": source.normalized_tags,
             "origin": evidence.origin,
             "language": evidence.language,
-            "segment_count": len(evidence.segments),
+            "segment_count": len(evidence.segments or []),
         },
     )
 
@@ -208,7 +208,7 @@ def build_source_nodes(source: TravelSource, evidence: SourceEvidence) -> list[T
                 "end_seconds": segment.get("end_seconds"),
             },
         )
-        for segment_index, segment in enumerate(evidence.segments)
+        for segment_index, segment in enumerate(evidence.segments or [])
         if isinstance(segment.get("text"), str) and (text := segment["text"].strip())
     ]
     if nodes:
@@ -243,5 +243,5 @@ def _source_metadata(source: TravelSource, evidence: SourceEvidence) -> dict[str
         "normalized_tags": source.normalized_tags,
         "origin": evidence.origin,
         "language": evidence.language,
-        "segment_count": len(evidence.segments),
+        "segment_count": len(evidence.segments or []),
     }

@@ -203,6 +203,32 @@ def test_upsert_replaces_existing_source_nodes_and_survives_reload(tmp_path) -> 
     assert [(item.evidence_id, item.text) for item in results] == [("evd_new", "新内容。")]
 
 
+def test_legacy_evidence_with_null_segments_falls_back_to_full_text(tmp_path) -> None:
+    source = TravelSource(
+        source_id="src_legacy_null_segments",
+        title="旧资料",
+        body_text="旧资料完整正文。",
+        destination="东京",
+        category="eat",
+    )
+    evidence = SourceEvidence(
+        evidence_id="evd_legacy_null_segments",
+        source_id=source.source_id,
+        origin="article",
+        full_text="旧资料完整正文。",
+    )
+    evidence.segments = None
+
+    index = RagIndex.for_test(tmp_path)
+    index.upsert_source(source, evidence)
+
+    results = index.retrieve("旧资料", allowed_source_ids={source.source_id})
+
+    assert [(item.evidence_id, item.text, item.segment_index) for item in results] == [
+        ("evd_legacy_null_segments", "旧资料完整正文。", None),
+    ]
+
+
 def test_segment_nodes_keep_timecode_provenance_replace_source_and_survive_reload(tmp_path) -> None:
     source = TravelSource(
         source_id="src_video_tokyo",
