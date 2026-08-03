@@ -3,6 +3,7 @@ from pathlib import Path
 from llama_index.core import Document, StorageContext, VectorStoreIndex, load_index_from_storage
 from llama_index.core.embeddings import BaseEmbedding, MockEmbedding
 from llama_index.core.schema import MetadataMode
+from llama_index.core.vector_stores import FilterOperator, MetadataFilter, MetadataFilters
 from llama_index.embeddings.ollama import OllamaEmbedding
 from sqlmodel import Session, select
 
@@ -56,7 +57,16 @@ class RagIndex:
         if not allowed_source_ids or not self._has_persisted_index():
             return []
         index = self._load_index()
-        nodes = index.as_retriever(similarity_top_k=max(self._top_k, len(allowed_source_ids))).retrieve(query)
+        filters = MetadataFilters(
+            filters=[
+                MetadataFilter(
+                    key="source_id",
+                    value=sorted(allowed_source_ids),
+                    operator=FilterOperator.IN,
+                )
+            ]
+        )
+        nodes = index.as_retriever(similarity_top_k=self._top_k, filters=filters).retrieve(query)
         return [
             RetrievedEvidence(
                 source_id=node.node.metadata["source_id"],
@@ -65,7 +75,6 @@ class RagIndex:
                 score=float(node.score or 0),
             )
             for node in nodes
-            if node.node.metadata.get("source_id") in allowed_source_ids
         ][: self._top_k]
 
     def _load_index(self) -> VectorStoreIndex:

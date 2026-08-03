@@ -378,6 +378,7 @@ def create_app(
             normalized_tags=query.normalized_tags,
             limit=request.limit,
         )
+        by_id = {source.source_id: source for source in sources}
         contexts = [
             {
                 "source_id": source.source_id,
@@ -390,12 +391,34 @@ def create_app(
             }
             for source in sources
         ]
+        rag_index = app.state.rag_index
+        if rag_index is not None and by_id:
+            try:
+                retrieved_evidence = rag_index.retrieve(
+                    request.message,
+                    allowed_source_ids=set(by_id),
+                )
+                if retrieved_evidence and all(evidence.source_id in by_id for evidence in retrieved_evidence):
+                    contexts = [
+                        {
+                            "source_id": evidence.source_id,
+                            "evidence_id": evidence.evidence_id,
+                            "title": by_id[evidence.source_id].title,
+                            "body_text": evidence.text,
+                            "original_url": by_id[evidence.source_id].original_url,
+                            "destination": by_id[evidence.source_id].destination,
+                            "category": by_id[evidence.source_id].category,
+                            "normalized_tags": by_id[evidence.source_id].normalized_tags,
+                        }
+                        for evidence in retrieved_evidence
+                    ]
+            except Exception:
+                logger.exception("RAG recommendation retrieval failed")
         try:
             result = await client.recommend(message=request.message, query=query, contexts=contexts)
         except Exception as exc:
             raise HTTPException(status_code=503, detail="llm unavailable") from exc
         used_ids = result.get("used_source_ids") or result.get("usedSourceIds") or []
-        by_id = {source.source_id: source for source in sources}
         used_sources = [to_used_source(by_id[source_id]) for source_id in used_ids if source_id in by_id]
         if not used_sources:
             used_sources = [to_used_source(source) for source in sources[:3]]

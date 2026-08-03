@@ -6,9 +6,13 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.llm import OllamaLlmClient, SourceAnalysis, TravelQuery, normalize_analysis
 from app.main import create_app
+from app.rag import RetrievedEvidence
 
 
 class FakeLlmClient:
+    def __init__(self) -> None:
+        self.contexts: list[dict] = []
+
     async def analyze_source(self, *, title: str, body_text: str, url: str | None, source_platform: str | None) -> SourceAnalysis:
         if "股票" in body_text:
             return SourceAnalysis(
@@ -38,6 +42,7 @@ class FakeLlmClient:
         )
 
     async def recommend(self, *, message: str, query: TravelQuery, contexts: list[dict]) -> dict:
+        self.contexts = contexts
         return {
             "answer": "第 1 天可以安排表参道下午茶，再去附近街区拍照。",
             "used_source_ids": [item["source_id"] for item in contexts[:2]],
@@ -69,6 +74,47 @@ class RecordingRagIndex:
 
     def upsert_source(self, source: object, evidence: object) -> None:
         self.indexed.append((source.source_id, evidence.evidence_id, evidence.full_text))
+
+
+class RetrievedEvidenceRagIndex:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.queries: list[tuple[str, set[str]]] = []
+
+    def upsert_source(self, source: object, evidence: object) -> None:
+        return None
+
+    def retrieve(self, query: str, *, allowed_source_ids: set[str]) -> list[RetrievedEvidence]:
+        self.queries.append((query, allowed_source_ids))
+        return [
+            RetrievedEvidence(
+                source_id=next(iter(allowed_source_ids)),
+                evidence_id="evd_test_evidence",
+                text=self.text,
+                score=1.0,
+            )
+        ]
+
+
+class MixedSourceRetrievedEvidenceRagIndex:
+    def upsert_source(self, source: object, evidence: object) -> None:
+        return None
+
+    def retrieve(self, query: str, *, allowed_source_ids: set[str]) -> list[RetrievedEvidence]:
+        return [
+            RetrievedEvidence(
+                source_id=next(iter(allowed_source_ids)),
+                evidence_id="evd_valid",
+                text="不应使用的有效检索片段。",
+                score=1.0,
+            ),
+            RetrievedEvidence(
+                source_id="src_not_sql_candidate",
+                evidence_id="evd_invalid",
+                text="不应使用的越界检索片段。",
+                score=0.9,
+            ),
+        ]
 
 
 def make_client(
@@ -379,6 +425,51 @@ def test_recommend_uses_saved_sources_as_trusted_citations(tmp_path: Path) -> No
     assert payload["used_sources"][0]["title"] == "东京表参道超好吃的舒芙蕾松饼"
     assert payload["used_sources"][0]["original_url"] == "https://xhslink.com/example"
     assert payload["used_sources"][0]["source_id"]
+
+
+def test_recommend_passes_retrieved_evidence_not_whole_source(tmp_path: Path) -> None:
+    llm = FakeLlmClient()
+    rag_index = RetrievedEvidenceRagIndex(text="表参道下午茶需要排队。")
+    client = make_client(tmp_path, llm_client=llm, rag_index=rag_index)
+    saved = client.post(
+        "/sources/collect",
+        json={
+            "input_type": "url",
+            "url": "https://xhslink.com/example",
+            "title": "东京表参道咖啡攻略",
+            "body_text": "这是不应传给推荐模型的完整原始资料。",
+            "source_platform": "xhs",
+        },
+    )
+    source_id = saved.json()["source"]["source_id"]
+
+    response = client.post("/chat/recommend", json={"message": "东京下午茶"})
+
+    assert response.status_code == 200
+    assert rag_index.queries == [("东京下午茶", {source_id})]
+    assert llm.contexts[0]["body_text"] == "表参道下午茶需要排队。"
+    assert response.json()["used_sources"][0]["source_id"] == source_id
+
+
+def test_recommend_falls_back_when_retrieval_contains_outside_sql_candidate(tmp_path: Path) -> None:
+    llm = FakeLlmClient()
+    client = make_client(tmp_path, llm_client=llm, rag_index=MixedSourceRetrievedEvidenceRagIndex())
+    saved = client.post(
+        "/sources/collect",
+        json={
+            "input_type": "url",
+            "url": "https://xhslink.com/example",
+            "title": "东京表参道咖啡攻略",
+            "body_text": "SQL 候选资料的完整正文。",
+            "source_platform": "xhs",
+        },
+    )
+
+    response = client.post("/chat/recommend", json={"message": "东京下午茶"})
+
+    assert response.status_code == 200
+    assert llm.contexts[0]["body_text"] == "SQL 候选资料的完整正文。"
+    assert response.json()["used_sources"][0]["source_id"] == saved.json()["source"]["source_id"]
 
 
 def test_collect_syncs_saved_source_to_rag(tmp_path: Path) -> None:

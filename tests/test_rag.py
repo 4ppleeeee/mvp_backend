@@ -1,9 +1,33 @@
 from sqlmodel import Session
+from llama_index.core.embeddings import BaseEmbedding
 
 from app.config import Settings
 from app.db import create_db_engine, init_db
 from app.models import SourceEvidence, TravelSource
 from app.rag import RagIndex, backfill_sources, build_source_document
+
+
+class CandidateRankingEmbedding(BaseEmbedding):
+    embed_dim: int
+
+    def __init__(self) -> None:
+        super().__init__(embed_dim=2)
+
+    @classmethod
+    def class_name(cls) -> str:
+        return "CandidateRankingEmbedding"
+
+    def _get_query_embedding(self, query: str) -> list[float]:
+        return [1.0, 0.0]
+
+    async def _aget_query_embedding(self, query: str) -> list[float]:
+        return self._get_query_embedding(query)
+
+    def _get_text_embedding(self, text: str) -> list[float]:
+        return [1.0, 0.0] if "非候选" in text else [0.0, 1.0]
+
+    async def _aget_text_embedding(self, text: str) -> list[float]:
+        return self._get_text_embedding(text)
 
 
 def test_document_keeps_source_and_evidence_provenance() -> None:
@@ -74,6 +98,52 @@ def test_upsert_replaces_existing_source_nodes_and_survives_reload(tmp_path) -> 
     results = reloaded.retrieve("新内容", allowed_source_ids={"src_tokyo"})
 
     assert [(item.evidence_id, item.text) for item in results] == [("evd_new", "新内容。")]
+
+
+def test_retrieve_filters_sql_candidates_before_top_k_ranking(tmp_path) -> None:
+    index = RagIndex(
+        persist_dir=tmp_path,
+        embedding_model=CandidateRankingEmbedding(),
+        top_k=1,
+    )
+    non_candidate = TravelSource(
+        source_id="src_non_candidate",
+        title="非候选资料",
+        body_text="非候选资料",
+        destination="东京",
+        category="eat",
+    )
+    candidate = TravelSource(
+        source_id="src_candidate",
+        title="候选资料",
+        body_text="候选资料",
+        destination="东京",
+        category="eat",
+    )
+    index.upsert_source(
+        non_candidate,
+        SourceEvidence(
+            evidence_id="evd_non_candidate",
+            source_id=non_candidate.source_id,
+            origin="article",
+            full_text="非候选资料的高相关内容。",
+        ),
+    )
+    index.upsert_source(
+        candidate,
+        SourceEvidence(
+            evidence_id="evd_candidate",
+            source_id=candidate.source_id,
+            origin="article",
+            full_text="候选资料的较低相关内容。",
+        ),
+    )
+
+    results = index.retrieve("东京餐厅", allowed_source_ids={candidate.source_id})
+
+    assert [(item.source_id, item.evidence_id) for item in results] == [
+        ("src_candidate", "evd_candidate"),
+    ]
 
 
 def test_backfill_creates_evidence_for_legacy_source_and_indexes_it(tmp_path) -> None:
