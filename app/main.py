@@ -1,5 +1,6 @@
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+import logging
 
 from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, status
 from fastapi.staticfiles import StaticFiles
@@ -12,6 +13,7 @@ from app.db import create_db_engine, init_db
 from app.llm import OllamaLlmClient, normalize_analysis, normalize_query
 from app.models import IngestionJob, TravelSource
 from app.repository import search_sources, to_card, to_used_source
+from app.rag import RagIndex, sync_source
 from app.schemas import (
     AnalyzeSourceResponse,
     AnalyzeImageRequest,
@@ -38,11 +40,19 @@ from app.ingestion.image_service import ImageIngestionService
 from app.admin_routes import create_admin_router
 
 
-def create_app(settings: Settings | None = None, llm_client: object | None = None) -> FastAPI:
+logger = logging.getLogger(__name__)
+
+
+def create_app(
+    settings: Settings | None = None,
+    llm_client: object | None = None,
+    rag_index: object | None = None,
+) -> FastAPI:
     app_settings = settings or Settings()
     Path(app_settings.uploads_dir).mkdir(parents=True, exist_ok=True)
     engine = create_db_engine(app_settings)
     client = llm_client or OllamaLlmClient(app_settings)
+    index = rag_index or (RagIndex.from_settings(app_settings) if app_settings.rag_enabled else None)
     init_db(engine)
 
     app = FastAPI(title="TripGuard MVP Backend", version="0.1.0")
@@ -51,6 +61,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
     app.state.settings = app_settings
     app.state.engine = engine
     app.state.llm_client = client
+    app.state.rag_index = index
     app.state.ingestion_executor = ThreadPoolExecutor(max_workers=1)
     app.include_router(create_admin_router(app_settings))
 
@@ -58,11 +69,27 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
         with Session(engine) as session:
             yield session
 
+    def sync_rag_source(session: Session, source_id: str) -> None:
+        if index is None:
+            return
+        try:
+            if sync_source(session, index, source_id):
+                session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception("RAG source sync failed", extra={"source_id": source_id})
+
+    def sync_completed_job_source(session: Session, job: IngestionJob) -> None:
+        session.refresh(job)
+        if job.status == "succeeded" and job.source_id:
+            sync_rag_source(session, job.source_id)
+
     def run_ingestion(job_id: str) -> None:
         with Session(engine) as session:
             job = session.exec(select(IngestionJob).where(IngestionJob.job_id == job_id)).one()
             if job.input_type == "image":
                 ImageIngestionService(session=session, llm_client=client).run(job_id)
+                sync_completed_job_source(session, job)
                 return
             if job.media_type == "article" and job.source_platform == "xiaohongshu":
                 if ArticleContentParser.is_xhs_video_url(job.original_url or ""):
@@ -71,6 +98,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
                     session.commit()
             if job.media_type == "article":
                 IngestionService(session=session, llm_client=client, pipeline=ArticlePipeline()).run(job_id)
+                sync_completed_job_source(session, job)
                 return
             default_policy = MediaEgressPolicy()
             proxy_policy = MediaEgressPolicy(app_settings.media_proxy_url)
@@ -114,6 +142,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             IngestionService(
                 session=session, llm_client=client, pipeline=pipeline, fallback_pipeline=fallback_pipeline
             ).run(job_id)
+            sync_completed_job_source(session, job)
 
     app.state.run_ingestion = run_ingestion
 
@@ -289,6 +318,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
         session.add(source)
         session.commit()
         session.refresh(source)
+        sync_rag_source(session, source.source_id)
         return CollectSourceResponse(saved=True, source=to_card(source))
 
     @app.post("/sources/collect", response_model=CollectSourceResponse, status_code=status.HTTP_201_CREATED)
@@ -317,6 +347,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
         session.add(source)
         session.commit()
         session.refresh(source)
+        sync_rag_source(session, source.source_id)
         return CollectSourceResponse(saved=True, source=to_card(source))
 
     @app.get("/sources", response_model=SourceListResponse)

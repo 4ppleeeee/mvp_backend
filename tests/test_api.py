@@ -63,14 +63,29 @@ class BrokenLlmClient:
         raise RuntimeError("model not available")
 
 
-def make_client(tmp_path: Path, llm_client: object | None = None) -> TestClient:
+class RecordingRagIndex:
+    def __init__(self) -> None:
+        self.indexed: list[tuple[str, str, str]] = []
+
+    def upsert_source(self, source: object, evidence: object) -> None:
+        self.indexed.append((source.source_id, evidence.evidence_id, evidence.full_text))
+
+
+def make_client(
+    tmp_path: Path,
+    llm_client: object | None = None,
+    rag_index: object | None = None,
+) -> TestClient:
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'tripguard-test.db'}",
         uploads_dir=str(tmp_path / "uploads"),
         llm_base_url="http://127.0.0.1:11434/v1",
         llm_model="gemma4:latest",
     )
-    app = create_app(settings=settings, llm_client=llm_client or FakeLlmClient())
+    if rag_index is None:
+        app = create_app(settings=settings, llm_client=llm_client or FakeLlmClient())
+    else:
+        app = create_app(settings=settings, llm_client=llm_client or FakeLlmClient(), rag_index=rag_index)
     return TestClient(app)
 
 
@@ -364,6 +379,28 @@ def test_recommend_uses_saved_sources_as_trusted_citations(tmp_path: Path) -> No
     assert payload["used_sources"][0]["title"] == "东京表参道超好吃的舒芙蕾松饼"
     assert payload["used_sources"][0]["original_url"] == "https://xhslink.com/example"
     assert payload["used_sources"][0]["source_id"]
+
+
+def test_collect_syncs_saved_source_to_rag(tmp_path: Path) -> None:
+    rag_index = RecordingRagIndex()
+    client = make_client(tmp_path, rag_index=rag_index)
+
+    response = client.post(
+        "/sources/collect",
+        json={
+            "input_type": "url",
+            "url": "https://xhslink.com/example",
+            "title": "东京表参道咖啡攻略",
+            "body_text": "表参道的咖啡店下午需要排队。",
+            "source_platform": "xhs",
+        },
+    )
+
+    assert response.status_code == 201
+    source_id = response.json()["source"]["source_id"]
+    assert len(rag_index.indexed) == 1
+    assert rag_index.indexed[0][0] == source_id
+    assert rag_index.indexed[0][2] == "表参道的咖啡店下午需要排队。"
 
 
 def test_ollama_client_bounds_json_generation(monkeypatch, tmp_path: Path) -> None:

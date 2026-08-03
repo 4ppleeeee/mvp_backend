@@ -13,7 +13,7 @@ Add a LlamaIndex-backed evidence retrieval layer to the existing FastAPI backend
 1. Saving an accepted source creates or updates its LlamaIndex document.
 2. One document has `ref_doc_id = source_id`; nodes preserve `source_id`, `evidence_id`, original URL, destination, category, tags, and segment position.
 3. The persisted index lives under the existing `/data` Docker volume so it survives container replacement.
-4. A backfill command reindexes all existing saved sources without changing source records.
+4. A backfill command reindexes all existing saved sources. For legacy direct collections that predate `SourceEvidence`, it creates one `source_body` evidence record from the saved source text before indexing.
 5. `EvidenceRetriever` receives the user message plus existing `TravelQuery` filters. It first applies the SQL filters, then performs vector retrieval over only those source ids. It returns bounded evidence snippets and their provenance.
 6. `/chat/recommend` keeps its request and response shape, but uses retrieved snippets rather than whole source bodies as LLM context. `used_source_ids` are still hydrated from the database before the API response is sent.
 
