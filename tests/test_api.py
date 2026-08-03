@@ -458,6 +458,87 @@ def test_recommend_uses_saved_sources_as_trusted_citations(tmp_path: Path) -> No
     assert payload["used_sources"][0]["source_id"]
 
 
+def test_chat_returns_itinerary_place_and_evidence_events(tmp_path: Path) -> None:
+    rag_index = RetrievedEvidenceRagIndex(text="表参道下午茶需要排队。")
+    client = make_client(tmp_path, rag_index=rag_index)
+    saved = client.post(
+        "/sources/collect",
+        json={
+            "input_type": "url",
+            "url": "https://xhslink.com/example",
+            "title": "东京表参道咖啡攻略",
+            "body_text": "这是一篇表参道下午茶攻略。",
+            "source_platform": "xhs",
+        },
+    )
+    source_id = saved.json()["source"]["source_id"]
+
+    response = client.post("/chat", json={"message": "东京下午茶怎么安排"})
+
+    assert response.status_code == 200
+    events = response.json()["events"]
+    assert [event["type"] for event in events] == [
+        "assistant_text",
+        "itinerary_card",
+        "place_card",
+        "evidence_card",
+    ]
+    assert events[1]["grounding"]["kind"] == "suggestion"
+    assert events[1]["actions"][0] == {
+        "action_id": "add_itinerary",
+        "label": "加入当前行程",
+        "kind": "local",
+        "payload": {"slot_ids": [events[1]["slots"][0]["slot_id"]]},
+    }
+    assert events[2]["grounding"] == {
+        "kind": "knowledge_base",
+        "source_id": source_id,
+        "evidence_id": "evd_test_evidence",
+        "segment_index": 4,
+        "start_seconds": 12.5,
+        "end_seconds": 27.0,
+    }
+    assert events[3]["excerpt"] == "表参道下午茶需要排队。"
+
+
+def test_chat_refresh_action_excludes_the_current_place(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    first = client.post(
+        "/sources/collect",
+        json={
+            "input_type": "url",
+            "url": "https://xhslink.com/first",
+            "title": "东京第一家咖啡店",
+            "body_text": "第一家表参道咖啡店。",
+            "source_platform": "xhs",
+        },
+    ).json()["source"]
+    second = client.post(
+        "/sources/collect",
+        json={
+            "input_type": "url",
+            "url": "https://xhslink.com/second",
+            "title": "东京第二家咖啡店",
+            "body_text": "第二家表参道咖啡店。",
+            "source_platform": "xhs",
+        },
+    ).json()["source"]
+
+    response = client.post(
+        "/chat/action",
+        json={
+            "message": "东京下午茶怎么安排",
+            "event_id": f"place:{first['source_id']}",
+            "action_id": "refresh_places",
+            "payload": {"exclude_event_ids": [f"place:{first['source_id']}"]},
+        },
+    )
+
+    assert response.status_code == 200
+    place_events = [event for event in response.json()["events"] if event["type"] == "place_card"]
+    assert [event["event_id"] for event in place_events] == [f"place:{second['source_id']}"]
+
+
 def test_recommend_passes_retrieved_evidence_not_whole_source(tmp_path: Path) -> None:
     llm = FakeLlmClient()
     rag_index = RetrievedEvidenceRagIndex(text="表参道下午茶需要排队。")

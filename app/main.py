@@ -18,14 +18,20 @@ from app.rag import RagIndex, sync_source
 from app.schemas import (
     AnalyzeSourceResponse,
     AnalyzeImageRequest,
+    ChatAction,
+    ChatActionRequest,
+    ChatGrounding,
     ChatRecommendRequest,
     ChatRecommendResponse,
+    ChatUiEvent,
+    ChatUiResponse,
     ClientConfigResponse,
     CollectSourceRequest,
     CollectSourceResponse,
     CreateIngestionRequest,
     IngestionAcceptedResponse,
     IngestionStatusResponse,
+    ItinerarySlot,
     SourceListResponse,
 )
 from app.ingestion.classifier import ResourceClassifier
@@ -384,8 +390,12 @@ def create_app(
         card["summary_text"] = source.summary_text
         return card
 
-    @app.post("/chat/recommend", response_model=ChatRecommendResponse)
-    async def recommend(request: ChatRecommendRequest, session: Session = Depends(get_session)) -> ChatRecommendResponse:
+    async def build_recommendation(
+        request: ChatRecommendRequest,
+        session: Session,
+        *,
+        excluded_source_ids: set[str] | None = None,
+    ) -> tuple[ChatRecommendResponse, dict[str, TravelSource], dict[str, object]]:
         try:
             query = normalize_query(await client.parse_query(message=request.message))
         except Exception as exc:
@@ -397,6 +407,8 @@ def create_app(
             normalized_tags=query.normalized_tags,
             limit=request.limit,
         )
+        if excluded_source_ids:
+            sources = [source for source in sources if source.source_id not in excluded_source_ids]
         by_id = {source.source_id: source for source in sources}
         contexts = [
             {
@@ -410,6 +422,7 @@ def create_app(
             }
             for source in sources
         ]
+        retrieved_by_source: dict[str, object] = {}
         rag_index = app.state.rag_index
         if rag_index is not None and by_id:
             try:
@@ -419,6 +432,10 @@ def create_app(
                     allowed_source_ids=set(by_id),
                 )
                 if retrieved_evidence and all(evidence.source_id in by_id for evidence in retrieved_evidence):
+                    retrieved_by_source = {
+                        evidence.source_id: evidence
+                        for evidence in retrieved_evidence
+                    }
                     contexts = [
                         {
                             "source_id": evidence.source_id,
@@ -445,7 +462,143 @@ def create_app(
         used_sources = [to_used_source(by_id[source_id]) for source_id in used_ids if source_id in by_id]
         if not used_sources:
             used_sources = [to_used_source(source) for source in sources[:3]]
-        return ChatRecommendResponse(answer=str(result.get("answer", "")), used_sources=used_sources)
+        return ChatRecommendResponse(answer=str(result.get("answer", "")), used_sources=used_sources), by_id, retrieved_by_source
+
+    def build_chat_events(
+        recommendation: ChatRecommendResponse,
+        sources_by_id: dict[str, TravelSource],
+        retrieved_by_source: dict[str, object],
+    ) -> list[ChatUiEvent]:
+        events = [
+            ChatUiEvent(
+                event_id="assistant:0",
+                type="assistant_text",
+                text=recommendation.answer or "暂时没有足够资料生成推荐。",
+            )
+        ]
+        if not recommendation.used_sources:
+            return events
+
+        first_source = recommendation.used_sources[0]
+        first_slot = ItinerarySlot(
+            slot_id=f"slot:{first_source.source_id}",
+            time_label="DAY 1",
+            title=first_source.title,
+            subtitle=f"{first_source.destination} · {first_source.category}",
+        )
+        events.append(
+            ChatUiEvent(
+                event_id=f"itinerary:{first_source.source_id}",
+                type="itinerary_card",
+                grounding=ChatGrounding(kind="suggestion"),
+                title="DAY 1 · 推荐路线",
+                slots=[first_slot],
+                actions=[
+                    ChatAction(
+                        action_id="add_itinerary",
+                        label="加入当前行程",
+                        kind="local",
+                        payload={"slot_ids": [first_slot.slot_id]},
+                    )
+                ],
+            )
+        )
+        for used_source in recommendation.used_sources:
+            source = sources_by_id[used_source.source_id]
+            evidence = retrieved_by_source.get(source.source_id)
+            if evidence is not None:
+                grounding = ChatGrounding(
+                    kind="knowledge_base",
+                    source_id=source.source_id,
+                    evidence_id=evidence.evidence_id,
+                    segment_index=evidence.segment_index,
+                    start_seconds=evidence.start_seconds,
+                    end_seconds=evidence.end_seconds,
+                )
+                summary = evidence.text
+            else:
+                grounding = ChatGrounding(kind="suggestion")
+                summary = source.summary_text or source.body_text
+            slot_id = f"slot:{source.source_id}"
+            events.append(
+                ChatUiEvent(
+                    event_id=f"place:{source.source_id}",
+                    type="place_card",
+                    grounding=grounding,
+                    title=source.title,
+                    summary=summary,
+                    tags=source.normalized_tags,
+                    actions=[
+                        ChatAction(
+                            action_id="add_slot",
+                            label="加入第 1 天",
+                            kind="local",
+                            payload={"slot_id": slot_id},
+                        ),
+                        ChatAction(
+                            action_id="refresh_places",
+                            label="换一批",
+                            kind="remote",
+                            payload={"exclude_event_ids": [f"place:{source.source_id}"]},
+                        ),
+                    ],
+                )
+            )
+            if evidence is not None:
+                time_label = (
+                    f" · 视频 {int(evidence.start_seconds // 60):02d}:{int(evidence.start_seconds % 60):02d}"
+                    if evidence.start_seconds is not None
+                    else ""
+                )
+                events.append(
+                    ChatUiEvent(
+                        event_id=f"evidence:{evidence.evidence_id}",
+                        type="evidence_card",
+                        grounding=grounding,
+                        label=f"我的收藏{time_label}",
+                        excerpt=evidence.text,
+                        actions=[
+                            ChatAction(
+                                action_id="toggle_evidence",
+                                label="查看证据",
+                                kind="local",
+                            )
+                        ],
+                    )
+                )
+        return events
+
+    @app.post("/chat/recommend", response_model=ChatRecommendResponse)
+    async def recommend(request: ChatRecommendRequest, session: Session = Depends(get_session)) -> ChatRecommendResponse:
+        recommendation, _, _ = await build_recommendation(request, session)
+        return recommendation
+
+    @app.post("/chat", response_model=ChatUiResponse, response_model_exclude_none=True)
+    async def chat(request: ChatRecommendRequest, session: Session = Depends(get_session)) -> ChatUiResponse:
+        recommendation, sources_by_id, retrieved_by_source = await build_recommendation(request, session)
+        return ChatUiResponse(
+            message_id="msg_current",
+            events=build_chat_events(recommendation, sources_by_id, retrieved_by_source),
+        )
+
+    @app.post("/chat/action", response_model=ChatUiResponse, response_model_exclude_none=True)
+    async def chat_action(request: ChatActionRequest, session: Session = Depends(get_session)) -> ChatUiResponse:
+        if request.action_id != "refresh_places":
+            raise HTTPException(status_code=400, detail="unsupported chat action")
+        excluded_source_ids = {
+            event_id.removeprefix("place:")
+            for event_id in request.payload.get("exclude_event_ids", [])
+            if isinstance(event_id, str) and event_id.startswith("place:")
+        }
+        recommendation, sources_by_id, retrieved_by_source = await build_recommendation(
+            request,
+            session,
+            excluded_source_ids=excluded_source_ids,
+        )
+        return ChatUiResponse(
+            message_id="msg_current",
+            events=build_chat_events(recommendation, sources_by_id, retrieved_by_source),
+        )
 
     return app
 

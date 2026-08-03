@@ -155,3 +155,51 @@ class UsedSource(BaseModel):
 class ChatRecommendResponse(BaseModel):
     answer: str
     used_sources: list[UsedSource]
+
+
+class ChatGrounding(BaseModel):
+    kind: Literal["knowledge_base", "external", "suggestion"]
+    source_id: str | None = None
+    evidence_id: str | None = None
+    segment_index: int | None = None
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+
+
+class ChatAction(BaseModel):
+    action_id: str
+    label: str
+    kind: Literal["local", "remote"]
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
+class ItinerarySlot(BaseModel):
+    slot_id: str
+    time_label: str
+    title: str
+    subtitle: str
+
+
+class ChatUiEvent(BaseModel):
+    event_id: str
+    type: Literal["assistant_text", "itinerary_card", "place_card", "evidence_card"]
+    text: str | None = None
+    grounding: ChatGrounding | None = None
+    title: str | None = None
+    summary: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    slots: list[ItinerarySlot] = Field(default_factory=list)
+    label: str | None = None
+    excerpt: str | None = None
+    actions: list[ChatAction] = Field(default_factory=list)
+
+
+class ChatUiResponse(BaseModel):
+    message_id: str
+    events: list[ChatUiEvent]
+
+
+class ChatActionRequest(ChatRecommendRequest):
+    event_id: str = Field(min_length=1)
+    action_id: str = Field(min_length=1)
+    payload: dict[str, object] = Field(default_factory=dict)
