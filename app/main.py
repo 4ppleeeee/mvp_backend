@@ -579,7 +579,12 @@ def create_app(
             return None
         contexts = []
         evidence_ids_by_source: dict[str, set[str]] = {}
-        for source_id, source in sources_by_id.items():
+        matched_sources = {
+            source_id: source
+            for source_id, source in sources_by_id.items()
+            if source.destination and source.destination in request.message
+        }
+        for source_id, source in matched_sources.items():
             evidence = retrieved_by_source.get(source_id)
             if evidence is not None:
                 evidence_ids_by_source[source_id] = {str(evidence.evidence_id)}
@@ -615,6 +620,7 @@ def create_app(
         )
         if len({event.event_id for event in candidate.events}) != len(candidate.events):
             return None
+        allowed_place_titles = {source.title for source in matched_sources.values()}
         allowed_actions = {
             "itinerary_card": {"add_itinerary"},
             "place_card": {"add_slot", "refresh_places"},
@@ -633,6 +639,8 @@ def create_app(
             ):
                 return None
             if event.type == "place_card" and not (event.title or "").strip():
+                return None
+            if event.type == "place_card" and event.title not in allowed_place_titles:
                 return None
             if event.type == "evidence_card" and (
                 not (event.label or "").strip() or not (event.excerpt or "").strip()

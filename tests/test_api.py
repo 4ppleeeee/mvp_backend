@@ -114,6 +114,15 @@ class ActionLeakingUiLlmClient(FakeLlmClient):
         )
 
 
+class MismatchedDirectUiLlmClient(DirectUiLlmClient):
+    async def analyze_source(self, **_: object) -> SourceAnalysis:
+        return SourceAnalysis(
+            is_travel_related=True,
+            destination="淄博",
+            category="eat",
+        )
+
+
 class BrokenLlmClient:
     async def analyze_source(self, **_: object) -> SourceAnalysis:
         raise RuntimeError("model not available")
@@ -551,6 +560,14 @@ def test_chat_returns_itinerary_place_and_evidence_events(tmp_path: Path) -> Non
 
 def test_chat_uses_model_generated_ui_protocol_after_backend_validation(tmp_path: Path) -> None:
     client = make_client(tmp_path, DirectUiLlmClient())
+    client.post(
+        "/sources/collect",
+        json={
+            "input_type": "text",
+            "title": "模型选择的表参道下午茶",
+            "body_text": "表参道下午茶攻略。",
+        },
+    )
 
     response = client.post("/chat", json={"message": "东京下午茶怎么安排"})
 
@@ -583,12 +600,37 @@ def test_chat_rejects_incomplete_model_card_and_falls_back_to_safe_events(tmp_pa
 
 def test_chat_strips_actions_not_enabled_by_the_current_catalog(tmp_path: Path) -> None:
     client = make_client(tmp_path, ActionLeakingUiLlmClient())
+    client.post(
+        "/sources/collect",
+        json={
+            "input_type": "text",
+            "title": "表参道咖啡攻略",
+            "body_text": "表参道下午茶攻略。",
+        },
+    )
 
     response = client.post("/chat", json={"message": "东京下午茶怎么安排"})
 
     assert response.status_code == 200
     assert response.json()["message_id"] == "model_message"
     assert response.json()["events"][1]["actions"] == []
+
+
+def test_chat_rejects_model_place_card_when_source_destination_is_not_in_question(tmp_path: Path) -> None:
+    client = make_client(tmp_path, MismatchedDirectUiLlmClient())
+    client.post(
+        "/sources/collect",
+        json={
+            "input_type": "text",
+            "title": "淄博博山菜",
+            "body_text": "清炸排骨和元宝饺子。",
+        },
+    )
+
+    response = client.post("/chat", json={"message": "东京下午茶怎么安排"})
+
+    assert response.status_code == 200
+    assert response.json()["message_id"] == "msg_current"
 
 
 def test_chat_refresh_action_excludes_the_current_place(tmp_path: Path) -> None:
