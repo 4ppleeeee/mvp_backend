@@ -605,6 +605,14 @@ def create_app(
             return None
         if not isinstance(candidate, ChatUiResponse) or not candidate.message_id or not candidate.events:
             return None
+        # The first Catalog is deliberately read-only. Model-proposed actions are
+        # data from an untrusted generator and are removed until the Compose
+        # action reducer has explicitly registered those capabilities.
+        candidate = candidate.model_copy(
+            update={
+                "events": [event.model_copy(update={"actions": []}) for event in candidate.events],
+            }
+        )
         if len({event.event_id for event in candidate.events}) != len(candidate.events):
             return None
         allowed_actions = {
@@ -615,6 +623,20 @@ def create_app(
         }
         for event in candidate.events:
             if not event.event_id or event.type not in allowed_actions:
+                return None
+            if event.type == "assistant_text" and not (event.text or "").strip():
+                return None
+            if event.type == "itinerary_card" and (
+                not (event.title or "").strip()
+                or not event.slots
+                or any(not slot.slot_id or not slot.time_label or not slot.title for slot in event.slots)
+            ):
+                return None
+            if event.type == "place_card" and not (event.title or "").strip():
+                return None
+            if event.type == "evidence_card" and (
+                not (event.label or "").strip() or not (event.excerpt or "").strip()
+            ):
                 return None
             if any(action.action_id not in allowed_actions[event.type] for action in event.actions):
                 return None

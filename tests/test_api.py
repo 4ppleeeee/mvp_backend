@@ -10,7 +10,7 @@ from app.config import Settings
 from app.llm import OllamaLlmClient, SourceAnalysis, TravelQuery, normalize_analysis
 from app.main import create_app
 from app.rag import RetrievedEvidence
-from app.schemas import ChatUiEvent, ChatUiResponse
+from app.schemas import ChatAction, ChatUiEvent, ChatUiResponse
 
 
 class FakeLlmClient:
@@ -82,6 +82,33 @@ class DirectUiLlmClient(FakeLlmClient):
                     type="place_card",
                     title="模型选择的表参道下午茶",
                     summary="卡片 type 和内容来自模型输出。",
+                ),
+            ],
+        )
+
+
+class InvalidDirectUiLlmClient(FakeLlmClient):
+    async def generate_chat_ui(self, **_: object) -> ChatUiResponse:
+        return ChatUiResponse(
+            message_id="invalid_model_message",
+            events=[
+                ChatUiEvent(event_id="model_text", type="assistant_text", text="模型回答"),
+                ChatUiEvent(event_id="blank_place", type="place_card"),
+            ],
+        )
+
+
+class ActionLeakingUiLlmClient(FakeLlmClient):
+    async def generate_chat_ui(self, **_: object) -> ChatUiResponse:
+        return ChatUiResponse(
+            message_id="model_message",
+            events=[
+                ChatUiEvent(event_id="model_text", type="assistant_text", text="模型回答"),
+                ChatUiEvent(
+                    event_id="model_place",
+                    type="place_card",
+                    title="表参道咖啡攻略",
+                    actions=[ChatAction(action_id="invented", label="不应出现", kind="local")],
                 ),
             ],
         )
@@ -532,6 +559,36 @@ def test_chat_uses_model_generated_ui_protocol_after_backend_validation(tmp_path
     assert payload["message_id"] == "model_message"
     assert [event["type"] for event in payload["events"]] == ["assistant_text", "place_card"]
     assert payload["events"][1]["title"] == "模型选择的表参道下午茶"
+
+
+def test_chat_rejects_incomplete_model_card_and_falls_back_to_safe_events(tmp_path: Path) -> None:
+    client = make_client(tmp_path, InvalidDirectUiLlmClient())
+    client.post(
+        "/sources/collect",
+        json={
+            "input_type": "url",
+            "url": "https://xhslink.com/example",
+            "title": "东京表参道咖啡攻略",
+            "body_text": "这是一篇表参道下午茶攻略。",
+            "source_platform": "xhs",
+        },
+    )
+
+    response = client.post("/chat", json={"message": "东京下午茶怎么安排"})
+
+    assert response.status_code == 200
+    assert response.json()["message_id"] == "msg_current"
+    assert "itinerary_card" in [event["type"] for event in response.json()["events"]]
+
+
+def test_chat_strips_actions_not_enabled_by_the_current_catalog(tmp_path: Path) -> None:
+    client = make_client(tmp_path, ActionLeakingUiLlmClient())
+
+    response = client.post("/chat", json={"message": "东京下午茶怎么安排"})
+
+    assert response.status_code == 200
+    assert response.json()["message_id"] == "model_message"
+    assert response.json()["events"][1]["actions"] == []
 
 
 def test_chat_refresh_action_excludes_the_current_place(tmp_path: Path) -> None:

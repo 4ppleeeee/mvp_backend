@@ -118,8 +118,11 @@ class OllamaLlmClient:
         content = (
             "你是 TripGuard 的旅行 UI Agent。请直接生成给手机客户端的最终 ChatUiResponse JSON。"
             "不要输出 Markdown、解释文字或代码。"
-            "允许的 event.type 只有 assistant_text, itinerary_card, place_card, evidence_card。"
-            "assistant_text 用于简短自然语言回答；其余 event 是交互卡片。"
+            "当前开放的 Catalog 只有 assistant_text 和 place_card；不得生成任何其他 type、action 或 grounding。"
+            "assistant_text 用于简短自然语言回答；place_card 是地点信息卡片。"
+            "events 的第一项必须是 assistant_text。只要可用资料上下文不为空，"
+            "必须至少生成一张 place_card。"
+            "place_card 必须填写 title（使用资料上下文里的 title）和 summary。"
             "只能使用资料上下文中出现的 source_id 和 evidence_id；"
             "没有 evidence_id 时，不得声称 grounding.kind 是 knowledge_base。"
             "action 只能使用：itinerary_card 的 add_itinerary，place_card 的 add_slot 或 refresh_places，"
@@ -133,6 +136,7 @@ class OllamaLlmClient:
         data = await self._chat_json(
             content,
             response_format=ChatUiResponse.model_json_schema(),
+            max_tokens=max(self._settings.llm_max_tokens, 500),
         )
         return _coerce_model(
             ChatUiResponse,
@@ -146,6 +150,7 @@ class OllamaLlmClient:
         *,
         images: list[str] | None = None,
         response_format: object = "json",
+        max_tokens: int | None = None,
     ) -> Any:
         url = f"{self._settings.llm_base_url.rstrip('/')}/api/chat"
         user_message: dict[str, Any] = {"role": "user", "content": content}
@@ -162,7 +167,7 @@ class OllamaLlmClient:
             "format": response_format,
             "options": {
                 "temperature": 0.1,
-                "num_predict": self._settings.llm_max_tokens,
+                "num_predict": max_tokens or self._settings.llm_max_tokens,
             },
         }
         async with httpx.AsyncClient(timeout=self._settings.request_timeout_seconds) as client:
