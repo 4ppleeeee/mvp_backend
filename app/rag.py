@@ -19,6 +19,10 @@ from app.config import Settings
 from app.models import SourceEvidence, TravelSource
 
 
+_DENSE_SEGMENT_THRESHOLD = 64
+_DENSE_SEGMENT_CHARS = 1_000
+
+
 @dataclass(frozen=True)
 class RetrievedEvidence:
     source_id: str
@@ -196,6 +200,13 @@ def build_source_document(source: TravelSource, evidence: SourceEvidence) -> Doc
 
 def build_source_nodes(source: TravelSource, evidence: SourceEvidence) -> list[TextNode]:
     metadata = _source_metadata(source, evidence)
+    segments = [
+        (segment_index, text, segment.get("start_seconds"), segment.get("end_seconds"))
+        for segment_index, segment in enumerate(evidence.segments or [])
+        if isinstance(segment.get("text"), str) and (text := segment["text"].strip())
+    ]
+    if len(segments) > _DENSE_SEGMENT_THRESHOLD:
+        return _build_compacted_segment_nodes(source, evidence, metadata, segments)
     nodes = [
         _source_node(
             source.source_id,
@@ -204,12 +215,11 @@ def build_source_nodes(source: TravelSource, evidence: SourceEvidence) -> list[T
             {
                 **metadata,
                 "segment_index": segment_index,
-                "start_seconds": segment.get("start_seconds"),
-                "end_seconds": segment.get("end_seconds"),
+                "start_seconds": start_seconds,
+                "end_seconds": end_seconds,
             },
         )
-        for segment_index, segment in enumerate(evidence.segments or [])
-        if isinstance(segment.get("text"), str) and (text := segment["text"].strip())
+        for segment_index, text, start_seconds, end_seconds in segments
     ]
     if nodes:
         return nodes
@@ -221,6 +231,55 @@ def build_source_nodes(source: TravelSource, evidence: SourceEvidence) -> list[T
             metadata,
         )
     ]
+
+
+def _build_compacted_segment_nodes(
+    source: TravelSource,
+    evidence: SourceEvidence,
+    metadata: dict[str, object],
+    segments: list[tuple[int, str, object, object]],
+) -> list[TextNode]:
+    nodes: list[TextNode] = []
+    chunk: list[str] = []
+    chunk_start_index: int | None = None
+    chunk_start_seconds: object = None
+    chunk_end_seconds: object = None
+    chunk_chars = 0
+
+    def flush() -> None:
+        nonlocal chunk, chunk_start_index, chunk_start_seconds, chunk_end_seconds, chunk_chars
+        if not chunk or chunk_start_index is None:
+            return
+        nodes.append(
+            _source_node(
+                source.source_id,
+                f"{source.source_id}:{evidence.evidence_id}:chunk:{chunk_start_index}",
+                "\n".join(chunk),
+                {
+                    **metadata,
+                    "segment_index": chunk_start_index,
+                    "start_seconds": chunk_start_seconds,
+                    "end_seconds": chunk_end_seconds,
+                },
+            )
+        )
+        chunk = []
+        chunk_start_index = None
+        chunk_start_seconds = None
+        chunk_end_seconds = None
+        chunk_chars = 0
+
+    for segment_index, text, start_seconds, end_seconds in segments:
+        if chunk and chunk_chars + len(text) + 1 > _DENSE_SEGMENT_CHARS:
+            flush()
+        if not chunk:
+            chunk_start_index = segment_index
+            chunk_start_seconds = start_seconds
+        chunk.append(text)
+        chunk_chars += len(text) + (1 if len(chunk) > 1 else 0)
+        chunk_end_seconds = end_seconds
+    flush()
+    return nodes
 
 
 def _source_node(source_id: str, node_id: str, text: str, metadata: dict[str, object]) -> TextNode:

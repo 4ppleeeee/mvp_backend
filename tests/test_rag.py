@@ -11,7 +11,7 @@ from sqlmodel import Session
 from app.config import Settings
 from app.db import create_db_engine, init_db
 from app.models import SourceEvidence, TravelSource
-from app.rag import RagIndex, backfill_sources, build_source_document
+from app.rag import RagIndex, backfill_sources, build_source_document, build_source_nodes
 from app import rag_backfill
 
 
@@ -36,6 +36,38 @@ class CandidateRankingEmbedding(BaseEmbedding):
 
     async def _aget_text_embedding(self, text: str) -> list[float]:
         return self._get_text_embedding(text)
+
+
+def test_dense_transcript_segments_are_compacted_with_first_timecode_provenance() -> None:
+    source = TravelSource(
+        source_id="src_dense_video",
+        title="高密度视频转写",
+        body_text="完整转写。",
+        destination="东京",
+        category="play",
+    )
+    evidence = SourceEvidence(
+        evidence_id="evd_dense_video",
+        source_id=source.source_id,
+        full_text="完整转写。",
+        segments=[
+            {
+                "start_seconds": index * 2,
+                "end_seconds": index * 2 + 2,
+                "text": f"第 {index} 段旅行信息。" * 20,
+            }
+            for index in range(65)
+        ],
+    )
+
+    nodes = build_source_nodes(source, evidence)
+
+    assert len(nodes) < 65
+    assert nodes[0].metadata["segment_index"] == 0
+    assert nodes[0].metadata["start_seconds"] == 0
+    assert nodes[-1].metadata["end_seconds"] == 130
+    assert "第 0 段旅行信息。" in nodes[0].text
+    assert "第 64 段旅行信息。" in nodes[-1].text
 
 
 class BlockingQueryEmbedding(BaseEmbedding):
