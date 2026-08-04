@@ -121,15 +121,22 @@ def test_admin_lists_crawlab_tasks_and_syncs_pages_to_rag(tmp_path: Path, monkey
         return FakeCrawlabResponse(lines=['{"url":"https://example.com/tokyo","title":"东京散步","file":"page.md","markdown":"东京适合散步和拍照。"}'])
 
     monkeypatch.setattr("app.admin_routes.requests.get", fake_get)
+    executor = RecordingExecutor()
+    client.app.state.ingestion_executor = executor
     client.post("/admin/login", data={"username": "admin", "password": "test-password"})
 
     listing = client.get("/admin/crawlab")
-    synced = client.post(f"/admin/crawlab/{task_id}/sync", follow_redirects=False)
+    synced = client.post("/admin/crawlab/sync", follow_redirects=False)
 
     assert listing.status_code == 200
     assert "Crawlab 抓取结果" in listing.text
-    assert f'action="/admin/crawlab/{task_id}/sync"' in listing.text
+    assert 'action="/admin/crawlab/sync"' in listing.text
+    assert listing.text.count('action="/admin/crawlab') == 1
+    assert "一键同步全部" in listing.text
     assert synced.status_code == 303
+    assert len(executor.calls) == 1
+    function, args = executor.calls[0]
+    function(*args)
     assert len(rag_index.indexed) == 1
     with Session(client.app.state.engine) as session:
         source = session.exec(select(TravelSource)).one()
@@ -137,6 +144,13 @@ def test_admin_lists_crawlab_tasks_and_syncs_pages_to_rag(tmp_path: Path, monkey
     assert source.source_platform == "crawlab"
     assert evidence.origin == "crawlab"
     assert evidence.metadata_json["crawlab_task_id"] == task_id
+    assert evidence.metadata_json["rag_synced"] is True
+
+    client.post("/admin/crawlab/sync", follow_redirects=False)
+    function, args = executor.calls[1]
+    function(*args)
+
+    assert len(rag_index.indexed) == 1
 
 
 def test_admin_login_creates_session_only_for_correct_password(tmp_path: Path) -> None:

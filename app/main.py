@@ -74,13 +74,14 @@ def create_app(
     app.state.llm_client = client
     app.state.rag_index = index
     app.state.ingestion_executor = ThreadPoolExecutor(max_workers=1)
+    app.state.crawlab_sync = {"status": "idle", "processed": 0, "synced": 0, "skipped": 0, "message": "尚未同步"}
     app.include_router(create_admin_router(app_settings))
 
     def get_session() -> Session:
         with Session(engine) as session:
             yield session
 
-    def sync_rag_source(source_id_or_session: str | Session, source_id: str | None = None) -> None:
+    def sync_rag_source(source_id_or_session: str | Session, source_id: str | None = None) -> bool:
         """Synchronize a committed source using a Session owned by this worker.
 
         Admin review historically passes its request Session as the first argument;
@@ -91,20 +92,22 @@ def create_app(
             source_id_or_session if isinstance(source_id_or_session, str) else None
         )
         if index is None:
-            return
+            return False
         if resolved_source_id is None:
             logger.warning("RAG source sync skipped without a source id")
-            return
+            return False
         try:
             with Session(engine) as rag_session:
                 try:
                     if sync_source(rag_session, index, resolved_source_id):
                         rag_session.commit()
+                        return True
                 except Exception:
                     rag_session.rollback()
                     raise
         except Exception:
             logger.exception("RAG source sync failed", extra={"source_id": resolved_source_id})
+        return False
 
     def sync_completed_job_source(session: Session, job: IngestionJob) -> None:
         session.refresh(job)

@@ -1,8 +1,9 @@
 from pathlib import Path
+import asyncio
 import json
 from urllib.parse import parse_qs, urljoin, urlsplit
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
@@ -149,84 +150,103 @@ def create_admin_router(settings: Settings) -> APIRouter:
     @router.get("/crawlab")
     def crawlab_results(request: Request):
         ensure_logged_in(request)
+        tasks = crawlab_tasks()
         return templates.TemplateResponse(
             request,
             "crawlab.html",
-            {"tasks": crawlab_tasks(), "message": request.query_params.get("message")},
+            {
+                "tasks": tasks,
+                "page_count": sum(int(task.get("page_count", 0)) for task in tasks),
+                "sync": request.app.state.crawlab_sync,
+            },
         )
 
-    @router.post("/crawlab/{task_id}/sync")
-    async def sync_crawlab_task(request: Request, task_id: str):
-        ensure_logged_in(request)
+    def sync_all_crawlab(app: FastAPI) -> None:
+        sync = app.state.crawlab_sync
+        sync.update(status="running", processed=0, synced=0, skipped=0, message="正在读取 Crawlab 抓取结果…")
         try:
-            response = requests.get(
-                f"{settings.crawlab_results_api_url.rstrip('/')}/api/v1/tasks/{task_id}/data.jsonl",
-                timeout=(3, 60),
-                stream=True,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise HTTPException(status_code=502, detail="Crawlab results API is unavailable") from exc
-        imported = 0
-        skipped = 0
-        try:
-            for page_index, raw_line in enumerate(response.iter_lines(decode_unicode=True)):
-                if not raw_line:
-                    continue
-                try:
-                    page = json.loads(raw_line)
-                except json.JSONDecodeError:
-                    skipped += 1
-                    continue
-                if not isinstance(page, dict) or not isinstance(page.get("markdown"), str) or not page["markdown"].strip():
-                    skipped += 1
-                    continue
-                page_url = page.get("url") if isinstance(page.get("url"), str) else f"crawlab://{task_id}/{page_index}"
-                with Session(request.app.state.engine) as session:
-                    if session.exec(select(TravelSource).where(TravelSource.original_url == page_url)).first() is not None:
-                        skipped += 1
+            for task in crawlab_tasks():
+                task_id = task["task_id"]
+                response = requests.get(
+                    f"{settings.crawlab_results_api_url.rstrip('/')}/api/v1/tasks/{task_id}/data.jsonl",
+                    timeout=(3, 60), stream=True,
+                )
+                response.raise_for_status()
+                for page_index, raw_line in enumerate(response.iter_lines(decode_unicode=True)):
+                    if not raw_line:
                         continue
-                    analysis = normalize_analysis(
-                        await request.app.state.llm_client.analyze_source(
+                    sync["processed"] += 1
+                    try:
+                        page = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        sync["skipped"] += 1
+                        continue
+                    if not isinstance(page, dict) or not isinstance(page.get("markdown"), str) or not page["markdown"].strip():
+                        sync["skipped"] += 1
+                        continue
+                    page_url = page.get("url") if isinstance(page.get("url"), str) else f"crawlab://{task_id}/{page_index}"
+                    with Session(app.state.engine) as session:
+                        existing = session.exec(select(TravelSource).where(TravelSource.original_url == page_url)).first()
+                        evidence = (
+                            session.exec(
+                                select(SourceEvidence)
+                                .where(SourceEvidence.source_id == existing.source_id)
+                                .order_by(SourceEvidence.created_at.desc())
+                            ).first()
+                            if existing is not None
+                            else None
+                        )
+                        if existing is not None:
+                            if evidence is not None and evidence.metadata_json.get("rag_synced") is True:
+                                sync["skipped"] += 1
+                                continue
+                            sync_rag_source = getattr(app.state, "sync_rag_source", None)
+                            if callable(sync_rag_source) and sync_rag_source(existing.source_id):
+                                if evidence is not None:
+                                    evidence.metadata_json = {**evidence.metadata_json, "rag_synced": True}
+                                    session.add(evidence)
+                                    session.commit()
+                                sync["synced"] += 1
+                            else:
+                                sync["skipped"] += 1
+                            continue
+                        analysis = normalize_analysis(asyncio.run(app.state.llm_client.analyze_source(
                             title=page.get("title") if isinstance(page.get("title"), str) else page_url,
-                            body_text=page["markdown"],
-                            url=page_url,
-                            source_platform="crawlab",
+                            body_text=page["markdown"], url=page_url, source_platform="crawlab",
+                        )))
+                        if not analysis.is_travel_related:
+                            sync["skipped"] += 1
+                            continue
+                        source = TravelSource(
+                            title=analysis.title or page.get("title") or page_url, body_text=analysis.body_text or page["markdown"],
+                            original_url=page_url, source_platform="crawlab", destination=analysis.destination, category=analysis.category,
+                            location_name=analysis.location_name, normalized_tags=analysis.normalized_tags, raw_tags=analysis.raw_tags,
                         )
-                    )
-                    if not analysis.is_travel_related:
-                        skipped += 1
-                        continue
-                    source = TravelSource(
-                        title=analysis.title or page.get("title") or page_url,
-                        body_text=analysis.body_text or page["markdown"],
-                        original_url=page_url,
-                        source_platform="crawlab",
-                        destination=analysis.destination,
-                        category=analysis.category,
-                        location_name=analysis.location_name,
-                        normalized_tags=analysis.normalized_tags,
-                        raw_tags=analysis.raw_tags,
-                    )
-                    session.add(source)
-                    session.flush()
-                    session.add(
-                        SourceEvidence(
-                            source_id=source.source_id,
-                            kind="crawlab_page",
-                            origin="crawlab",
-                            full_text=page["markdown"],
-                            metadata_json={"crawlab_task_id": task_id, "page_file": page.get("file")},
-                        )
-                    )
-                    session.commit()
-                    sync_rag_source = getattr(request.app.state, "sync_rag_source", None)
-                    if callable(sync_rag_source):
-                        sync_rag_source(source.source_id)
-                    imported += 1
-        finally:
-            response.close()
-        return RedirectResponse(f"/admin/crawlab?message=已同步{imported}条，跳过{skipped}条", status_code=status.HTTP_303_SEE_OTHER)
+                        session.add(source); session.flush()
+                        evidence = SourceEvidence(source_id=source.source_id, kind="crawlab_page", origin="crawlab", full_text=page["markdown"], metadata_json={"crawlab_task_id": task_id, "page_file": page.get("file")})
+                        session.add(evidence)
+                        session.commit()
+                        sync_rag_source = getattr(app.state, "sync_rag_source", None)
+                        if callable(sync_rag_source) and sync_rag_source(source.source_id):
+                            evidence.metadata_json = {**evidence.metadata_json, "rag_synced": True}
+                            session.add(evidence)
+                            session.commit()
+                            sync["synced"] += 1
+                        else:
+                            sync["skipped"] += 1
+                response.close()
+            sync.update(status="succeeded", message="同步完成")
+        except Exception as exc:
+            sync.update(status="failed", message=f"同步失败：{_brief_error(str(exc))}")
+
+    @router.post("/crawlab/sync")
+    def sync_crawlab(request: Request):
+        ensure_logged_in(request)
+        sync = request.app.state.crawlab_sync
+        if sync["status"] not in {"queued", "running"}:
+            sync.update(status="queued", message="等待同步任务开始…")
+            request.app.state.ingestion_executor.submit(sync_all_crawlab, request.app)
+        return RedirectResponse("/admin/crawlab", status_code=status.HTTP_303_SEE_OTHER)
 
     @router.get("/sources")
     def sources(request: Request, source_id: str | None = None):
