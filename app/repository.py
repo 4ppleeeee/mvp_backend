@@ -48,6 +48,14 @@ def search_sources(
         statement = statement.where(col(TravelSource.category).in_(categories))
     statement = statement.order_by(TravelSource.created_at.desc()).limit(limit * 3)
     candidates = list(session.exec(statement))
+    if not candidates and destination and categories:
+        relaxed_statement = (
+            select(TravelSource)
+            .where(col(TravelSource.destination).contains(destination))
+            .order_by(TravelSource.created_at.desc())
+            .limit(limit * 3)
+        )
+        candidates = list(session.exec(relaxed_statement))
     if normalized_tags:
         tagged = [
             source
@@ -57,4 +65,3 @@ def search_sources(
         if tagged:
             candidates = tagged
     return candidates[:limit]
-

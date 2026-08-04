@@ -99,8 +99,14 @@ class OllamaLlmClient:
         return _coerce_model(TravelQuery, data, fallback=TravelQuery(raw_intent=message))
 
     async def recommend(self, *, message: str, query: TravelQuery, contexts: list[dict]) -> dict:
+        source_policy = (
+            "收藏资料存在时，只能基于给定收藏资料生成推荐，不能把模型记忆当作收藏事实。"
+            if contexts
+            else "当前没有命中用户收藏资料。必须生成通用旅行建议，并在开头明确说明这是未命中收藏的通用建议；"
+            "不得只回复没有资料、无法推荐或要求用户自行搜索。不要虚构实时价格、营业时间、政策或已验证的预订信息。"
+        )
         content = (
-            "你是旅行规划助手。只能基于给定收藏资料生成推荐。"
+            f"你是旅行规划助手。{source_policy}"
             "返回 JSON：answer 为中文推荐文本，used_source_ids 为实际使用的 source_id 数组。"
             "\n\n"
             f"用户问题：{message}\n解析条件：{query.model_dump_json(ensure_ascii=False)}\n收藏资料：{json.dumps(contexts, ensure_ascii=False)}"

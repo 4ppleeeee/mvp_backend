@@ -68,6 +68,25 @@ class FakeLlmClient:
         )
 
 
+class ChengduQueryLlmClient(FakeLlmClient):
+    async def analyze_source(self, **_: object) -> SourceAnalysis:
+        return SourceAnalysis(
+            is_travel_related=True,
+            reason="travel food note",
+            confidence=0.93,
+            destination="成都",
+            category="eat",
+            normalized_tags=["本地人常去"],
+        )
+
+    async def parse_query(self, *, message: str) -> TravelQuery:
+        return TravelQuery(
+            destination="成都",
+            categories=["transport"],
+            raw_intent=message,
+        )
+
+
 class DirectUiLlmClient(FakeLlmClient):
     async def generate_chat_ui(self, **_: object) -> ChatUiResponse:
         return ChatUiResponse(
@@ -514,6 +533,51 @@ def test_recommend_uses_saved_sources_as_trusted_citations(tmp_path: Path) -> No
     assert payload["used_sources"][0]["title"] == "东京表参道超好吃的舒芙蕾松饼"
     assert payload["used_sources"][0]["original_url"] == "https://xhslink.com/example"
     assert payload["used_sources"][0]["source_id"]
+
+
+def test_recommend_relaxes_category_filter_when_destination_has_saved_sources(tmp_path: Path) -> None:
+    client = make_client(tmp_path, llm_client=ChengduQueryLlmClient())
+    client.post(
+        "/sources/collect",
+        json={
+            "input_type": "text",
+            "title": "成都本地人常去的苍蝇馆子",
+            "body_text": "成都三天旅行时可以安排的一家本地餐馆。",
+            "source_platform": "manual",
+        },
+    )
+
+    response = client.post("/chat/recommend", json={"message": "成都三天怎么玩，交通方便一点"})
+
+    assert response.status_code == 200
+    assert response.json()["used_sources"][0]["title"] == "成都本地人常去的苍蝇馆子"
+
+
+def test_ollama_recommend_requires_a_general_plan_when_no_favorite_matches(tmp_path: Path) -> None:
+    client = OllamaLlmClient(
+        Settings(
+            database_url=f"sqlite:///{tmp_path / 'tripguard-test.db'}",
+            uploads_dir=str(tmp_path / "uploads"),
+        )
+    )
+    prompts: list[str] = []
+
+    async def capture_prompt(content: str, **_: object) -> dict[str, object]:
+        prompts.append(content)
+        return {"answer": "成都三天通用建议", "used_source_ids": []}
+
+    client._chat_json = capture_prompt  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        client.recommend(
+            message="成都三天怎么玩",
+            query=TravelQuery(destination="成都"),
+            contexts=[],
+        )
+    )
+
+    assert result["answer"] == "成都三天通用建议"
+    assert "必须生成通用旅行建议" in prompts[0]
 
 
 def test_chat_returns_itinerary_place_and_evidence_events(tmp_path: Path) -> None:
