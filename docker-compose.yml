@@ -37,8 +37,12 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - tripguard_mvp_net
+      - crawlab_results_net
 
 networks:
   tripguard_mvp_net:
     name: tripguard_mvp_net
     driver: bridge
+  crawlab_results_net:
+    external: true
+    name: crawlab-results-api_default
