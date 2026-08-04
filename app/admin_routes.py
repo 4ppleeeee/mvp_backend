@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
@@ -9,6 +10,7 @@ import requests
 
 from app.admin_auth import AdminAuthenticator
 from app.config import Settings
+from app.llm import normalize_analysis
 from app.ingestion.classifier import ResourceClassifier
 from app.ingestion.input import extract_first_http_url
 from app.ingestion.article import SafeHtmlFetcher
@@ -93,6 +95,15 @@ def create_admin_router(settings: Settings) -> APIRouter:
             return source.cover_image_url
         return f"/admin/sources/{source.source_id}/cover"
 
+    def crawlab_tasks() -> list[dict[str, object]]:
+        try:
+            response = requests.get(f"{settings.crawlab_results_api_url.rstrip('/')}/api/v1/tasks", timeout=(3, 15))
+            response.raise_for_status()
+            tasks = response.json().get("tasks", [])
+        except (requests.RequestException, ValueError):
+            return []
+        return [task for task in tasks if isinstance(task, dict) and isinstance(task.get("task_id"), str)]
+
     @router.get("/login")
     def login_form(request: Request):
         ensure_configured()
@@ -134,6 +145,88 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 },
             },
         )
+
+    @router.get("/crawlab")
+    def crawlab_results(request: Request):
+        ensure_logged_in(request)
+        return templates.TemplateResponse(
+            request,
+            "crawlab.html",
+            {"tasks": crawlab_tasks(), "message": request.query_params.get("message")},
+        )
+
+    @router.post("/crawlab/{task_id}/sync")
+    async def sync_crawlab_task(request: Request, task_id: str):
+        ensure_logged_in(request)
+        try:
+            response = requests.get(
+                f"{settings.crawlab_results_api_url.rstrip('/')}/api/v1/tasks/{task_id}/data.jsonl",
+                timeout=(3, 60),
+                stream=True,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=502, detail="Crawlab results API is unavailable") from exc
+        imported = 0
+        skipped = 0
+        try:
+            for page_index, raw_line in enumerate(response.iter_lines(decode_unicode=True)):
+                if not raw_line:
+                    continue
+                try:
+                    page = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    skipped += 1
+                    continue
+                if not isinstance(page, dict) or not isinstance(page.get("markdown"), str) or not page["markdown"].strip():
+                    skipped += 1
+                    continue
+                page_url = page.get("url") if isinstance(page.get("url"), str) else f"crawlab://{task_id}/{page_index}"
+                with Session(request.app.state.engine) as session:
+                    if session.exec(select(TravelSource).where(TravelSource.original_url == page_url)).first() is not None:
+                        skipped += 1
+                        continue
+                    analysis = normalize_analysis(
+                        await request.app.state.llm_client.analyze_source(
+                            title=page.get("title") if isinstance(page.get("title"), str) else page_url,
+                            body_text=page["markdown"],
+                            url=page_url,
+                            source_platform="crawlab",
+                        )
+                    )
+                    if not analysis.is_travel_related:
+                        skipped += 1
+                        continue
+                    source = TravelSource(
+                        title=analysis.title or page.get("title") or page_url,
+                        body_text=analysis.body_text or page["markdown"],
+                        original_url=page_url,
+                        source_platform="crawlab",
+                        destination=analysis.destination,
+                        category=analysis.category,
+                        location_name=analysis.location_name,
+                        normalized_tags=analysis.normalized_tags,
+                        raw_tags=analysis.raw_tags,
+                    )
+                    session.add(source)
+                    session.flush()
+                    session.add(
+                        SourceEvidence(
+                            source_id=source.source_id,
+                            kind="crawlab_page",
+                            origin="crawlab",
+                            full_text=page["markdown"],
+                            metadata_json={"crawlab_task_id": task_id, "page_file": page.get("file")},
+                        )
+                    )
+                    session.commit()
+                    sync_rag_source = getattr(request.app.state, "sync_rag_source", None)
+                    if callable(sync_rag_source):
+                        sync_rag_source(source.source_id)
+                    imported += 1
+        finally:
+            response.close()
+        return RedirectResponse(f"/admin/crawlab?message=已同步{imported}条，跳过{skipped}条", status_code=status.HTTP_303_SEE_OTHER)
 
     @router.get("/sources")
     def sources(request: Request, source_id: str | None = None):

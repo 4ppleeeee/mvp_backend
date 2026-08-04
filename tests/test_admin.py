@@ -5,6 +5,7 @@ from pwdlib import PasswordHash
 from sqlmodel import Session, select
 
 from app.config import Settings
+from app.llm import SourceAnalysis
 from app.main import create_app
 from app.models import IngestionJob, IngestionReview, SourceEvidence, TravelSource
 
@@ -14,6 +15,7 @@ def configured_client(
     *,
     raise_server_exceptions: bool = True,
     rag_index: object | None = None,
+    llm_client: object | None = None,
 ) -> TestClient:
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'admin.db'}",
@@ -23,7 +25,7 @@ def configured_client(
         admin_session_secret="test-session-secret",
     )
     return TestClient(
-        create_app(settings=settings, rag_index=rag_index),
+        create_app(settings=settings, rag_index=rag_index, llm_client=llm_client),
         raise_server_exceptions=raise_server_exceptions,
     )
 
@@ -53,6 +55,34 @@ class FailingRagIndex:
         raise RuntimeError("index unavailable")
 
 
+class CrawlabLlmClient:
+    async def analyze_source(self, **_: object) -> SourceAnalysis:
+        return SourceAnalysis(
+            is_travel_related=True,
+            destination="东京",
+            category="play",
+            normalized_tags=["拍照好看"],
+        )
+
+
+class FakeCrawlabResponse:
+    def __init__(self, payload: dict | None = None, lines: list[str] | None = None) -> None:
+        self._payload = payload or {}
+        self._lines = lines or []
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+    def iter_lines(self, *, decode_unicode: bool) -> list[str]:
+        return self._lines
+
+    def close(self) -> None:
+        return None
+
+
 def create_saved_source(client: TestClient) -> str:
     with Session(client.app.state.engine) as session:
         source = TravelSource(
@@ -78,6 +108,35 @@ def test_admin_redirects_unauthenticated_user_to_login(tmp_path: Path) -> None:
 
     assert response.status_code == 303
     assert response.headers["location"] == "/admin/login"
+
+
+def test_admin_lists_crawlab_tasks_and_syncs_pages_to_rag(tmp_path: Path, monkeypatch) -> None:
+    rag_index = RecordingRagIndex()
+    client = configured_client(tmp_path, rag_index=rag_index, llm_client=CrawlabLlmClient())
+    task_id = "a" * 24
+
+    def fake_get(url: str, **_: object) -> FakeCrawlabResponse:
+        if url.endswith("/tasks"):
+            return FakeCrawlabResponse({"tasks": [{"task_id": task_id, "start_url": "https://example.com/tokyo", "page_count": 1, "failure_count": 0}]})
+        return FakeCrawlabResponse(lines=['{"url":"https://example.com/tokyo","title":"东京散步","file":"page.md","markdown":"东京适合散步和拍照。"}'])
+
+    monkeypatch.setattr("app.admin_routes.requests.get", fake_get)
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    listing = client.get("/admin/crawlab")
+    synced = client.post(f"/admin/crawlab/{task_id}/sync", follow_redirects=False)
+
+    assert listing.status_code == 200
+    assert "Crawlab 抓取结果" in listing.text
+    assert f'action="/admin/crawlab/{task_id}/sync"' in listing.text
+    assert synced.status_code == 303
+    assert len(rag_index.indexed) == 1
+    with Session(client.app.state.engine) as session:
+        source = session.exec(select(TravelSource)).one()
+        evidence = session.exec(select(SourceEvidence).where(SourceEvidence.source_id == source.source_id)).one()
+    assert source.source_platform == "crawlab"
+    assert evidence.origin == "crawlab"
+    assert evidence.metadata_json["crawlab_task_id"] == task_id
 
 
 def test_admin_login_creates_session_only_for_correct_password(tmp_path: Path) -> None:

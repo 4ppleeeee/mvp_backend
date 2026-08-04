@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     rag_embedding_model: str = "nomic-embed-text"
     rag_top_k: int = 6
     rag_enabled: bool = False
+    crawlab_results_api_url: str = "http://results-api:8091"
     ingestion_temp_dir: str = "./ingestion-tmp"
     ingestion_max_attempts: int = 2
     ingestion_max_upload_bytes: int = 512 * 1024 * 1024

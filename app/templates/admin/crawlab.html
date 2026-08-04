@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/static/admin.css"><title>Crawlab 抓取结果 · TripGuard</title></head>
+<body><main class="app-shell"><header class="topbar"><a class="brand-lockup" href="/admin"><span class="brand-mark"></span><span>TripGuard</span></a><nav class="app-nav"><a href="/admin">解析任务</a><a href="/admin/sources">解析结果</a><a class="active" href="/admin/crawlab">Crawlab 抓取结果</a></nav><form method="post" action="/admin/logout"><button class="text-button" type="submit">退出登录</button></form></header>
+<section class="hero"><div><p class="eyebrow">CRAWLAB RESULTS</p><h1>抓取结果</h1><p>同步一个任务的全部页面；内容会先经过旅行识别，入库后立即进入 RAG。</p></div></section>
+{% if message %}<div class="empty">{{ message }}</div>{% endif %}
+{% if tasks %}<section class="task-workspace"><div class="workspace-heading"><div><p class="eyebrow">TASKS</p><h2>可同步任务</h2></div><span>{{ tasks | length }} 条</span></div><div class="task-list">{% for task in tasks %}<div class="task"><div class="task-main"><strong>{{ task.start_url or task.task_id }}</strong><small>{{ task.page_count }} 个页面 · {{ task.failure_count }} 个失败</small></div><form method="post" action="/admin/crawlab/{{ task.task_id }}/sync"><button type="submit">一键同步</button></form></div>{% endfor %}</div></section>{% else %}<div class="empty">暂时无法读取 Crawlab 任务。</div>{% endif %}
+</main></body></html>
