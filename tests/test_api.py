@@ -87,6 +87,11 @@ class ChengduQueryLlmClient(FakeLlmClient):
         )
 
 
+class UnparsedDestinationLlmClient(FakeLlmClient):
+    async def parse_query(self, *, message: str) -> TravelQuery:
+        return TravelQuery(raw_intent=message)
+
+
 class DirectUiLlmClient(FakeLlmClient):
     async def generate_chat_ui(self, **_: object) -> ChatUiResponse:
         return ChatUiResponse(
@@ -578,6 +583,49 @@ def test_ollama_recommend_requires_a_general_plan_when_no_favorite_matches(tmp_p
 
     assert result["answer"] == "成都三天通用建议"
     assert "必须生成通用旅行建议" in prompts[0]
+
+
+def test_recommend_does_not_use_cross_city_sources_when_query_destination_is_unparsed(tmp_path: Path) -> None:
+    llm = UnparsedDestinationLlmClient()
+    client = make_client(tmp_path, llm_client=llm)
+    client.post(
+        "/sources/collect",
+        json={
+            "input_type": "text",
+            "title": "北京天坛公园游览路线",
+            "body_text": "北京旅行的公园游览建议。",
+            "source_platform": "manual",
+        },
+    )
+
+    response = client.post("/chat/recommend", json={"message": "成都三天怎么玩"})
+
+    assert response.status_code == 200
+    assert llm.contexts == []
+    assert response.json()["used_sources"] == []
+
+
+def test_ollama_query_parser_uses_the_travel_query_schema(tmp_path: Path) -> None:
+    client = OllamaLlmClient(
+        Settings(
+            database_url=f"sqlite:///{tmp_path / 'tripguard-test.db'}",
+            uploads_dir=str(tmp_path / "uploads"),
+        )
+    )
+    capture: dict[str, object] = {}
+
+    async def capture_query(content: str, **kwargs: object) -> dict[str, object]:
+        capture["content"] = content
+        capture["response_format"] = kwargs["response_format"]
+        return {"destination": "成都", "days": 3, "categories": ["play"], "confidence": 0.9}
+
+    client._chat_json = capture_query  # type: ignore[method-assign]
+
+    parsed = asyncio.run(client.parse_query(message="成都三天怎么玩"))
+
+    assert parsed.destination == "成都"
+    assert capture["response_format"] == TravelQuery.model_json_schema()
+    assert "destination 是问题中明确出现的城市" in str(capture["content"])
 
 
 def test_chat_returns_itinerary_place_and_evidence_events(tmp_path: Path) -> None:

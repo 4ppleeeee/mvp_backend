@@ -90,12 +90,16 @@ class OllamaLlmClient:
     async def parse_query(self, *, message: str) -> TravelQuery:
         content = (
             "请把用户旅行问题解析成 JSON 检索条件。"
+            "只允许输出以下字段：destination, days, categories, normalized_tags, raw_intent, confidence。"
+            "destination 是问题中明确出现的城市、国家或地区；例如“成都三天怎么玩”必须输出 destination 为“成都”，"
+            "不能省略、不能输出其他字段名。没有明确目的地才用 null。"
+            "days 是明确出现的天数，否则为 null。raw_intent 保留用户的原始旅行诉求。"
             "categories 只能从 eat, drink, play, entertainment, stay, transport 中选择。"
             f"normalized_tags 只能从这个列表选择：{sorted(STANDARD_TAGS)}。"
             "\n\n"
             f"用户问题：{message}"
         )
-        data = await self._chat_json(content)
+        data = await self._chat_json(content, response_format=TravelQuery.model_json_schema())
         return _coerce_model(TravelQuery, data, fallback=TravelQuery(raw_intent=message))
 
     async def recommend(self, *, message: str, query: TravelQuery, contexts: list[dict]) -> dict:

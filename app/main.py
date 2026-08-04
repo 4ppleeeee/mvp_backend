@@ -407,12 +407,16 @@ def create_app(
             query = normalize_query(await client.parse_query(message=request.message))
         except Exception as exc:
             raise HTTPException(status_code=503, detail="llm unavailable") from exc
-        sources = search_sources(
-            session,
-            destination=query.destination,
-            categories=query.categories,
-            normalized_tags=query.normalized_tags,
-            limit=request.limit,
+        sources = (
+            []
+            if query.destination is None and query.confidence <= 0
+            else search_sources(
+                session,
+                destination=query.destination,
+                categories=query.categories,
+                normalized_tags=query.normalized_tags,
+                limit=request.limit,
+            )
         )
         if excluded_source_ids:
             sources = [source for source in sources if source.source_id not in excluded_source_ids]
