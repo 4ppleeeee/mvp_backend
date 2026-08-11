@@ -80,11 +80,9 @@ class AttractionClient:
         return self._post("/attraction/get", {"attractionId": attraction_id})
 
     def create(self, *, poi_id: str, attr_info: dict[str, Any]) -> dict[str, Any]:
-        try:
-            numeric_poi_id: int | str = int(poi_id)
-        except (TypeError, ValueError):
-            numeric_poi_id = poi_id
-        return self._post("/attraction/create", {"poiId": numeric_poi_id, "attrInfo": attr_info})
+        # Tencent POI ids can exceed JavaScript's safe integer range. Keep the
+        # identifier as a string across the JSON boundary to avoid precision loss.
+        return self._post("/attraction/create", {"poiId": str(poi_id), "attrInfo": attr_info})
 
     def update(self, *, attraction_id: str, attr_info: dict[str, Any], status: int | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"attractionId": attraction_id, "attrInfo": attr_info}
@@ -105,7 +103,9 @@ class AttractionClient:
             raise PoiIntegrationError("景点后台请求失败") from exc
         body = _json_response(response, label="景点后台")
         if body.get("code") not in (None, 0):
-            raise PoiIntegrationError(str(body.get("msg") or "景点后台返回失败"))
+            code = body.get("code")
+            message = body.get("msg") or "景点后台返回失败"
+            raise PoiIntegrationError(f"景点后台返回失败（code {code}）：{message}")
         data = body.get("data")
         return data if isinstance(data, dict) else body
 

@@ -102,6 +102,6 @@ def test_attraction_client_create_sends_poi_id_and_attr_info(monkeypatch) -> Non
 
     assert result["attractionId"] == "ATTR-1"
     assert calls[0]["json"] == {
-        "poiId": 923456,
+        "poiId": "923456",
         "attrInfo": {"name": "故宫博物院", "cityName": "北京", "tags": ["博物馆"]},
     }
