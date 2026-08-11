@@ -4,7 +4,7 @@ from sqlmodel import Session, select
 
 from app.config import Settings
 from app.db import create_db_engine, init_db
-from app.ingestion.domain import EvidenceBundle, EvidenceOrigin, MediaMetadata, Transcript, TranscriptSegment
+from app.ingestion.domain import EvidenceBundle, EvidenceOrigin, MediaExtractionError, MediaMetadata, Transcript, TranscriptSegment
 from app.ingestion.service import IngestionService
 from app.llm import SourceAnalysis
 from app.models import IngestionJob, SourceEvidence, TravelSource
@@ -101,6 +101,34 @@ def test_ingestion_service_clears_old_error_and_persists_progress(tmp_path: Path
         assert result.progress_updated_at is not None
         assert result.error_code is None
         assert result.error_message is None
+
+
+def test_ingestion_service_keeps_metadata_when_later_media_processing_fails(tmp_path: Path) -> None:
+    class MetadataThenFailurePipeline:
+        def extract(self, _url: str, _job_id: str, *, metadata_callback=None):
+            if metadata_callback:
+                metadata_callback(
+                    MediaMetadata(
+                        title="北京五分钟攻略",
+                        source_platform="douyin",
+                        canonical_url="https://v.douyin.com/example",
+                    )
+                )
+            raise MediaExtractionError("audio", "router_default", "upstream audio failed")
+
+    engine = create_db_engine(Settings(database_url=f"sqlite:///{tmp_path / 'metadata-failure.db'}"))
+    init_db(engine)
+    with Session(engine) as session:
+        job = IngestionJob(input_type="url", original_url="https://v.douyin.com/example", source_platform="douyin", media_type="video")
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+
+        result = IngestionService(session=session, llm_client=TravelLlm(), pipeline=MetadataThenFailurePipeline()).run(job.job_id)
+
+        assert result.status == "failed"
+        assert result.evidence_metadata_json["title"] == "北京五分钟攻略"
+        assert result.evidence_metadata_json["source_platform"] == "douyin"
 
 
 def test_ingestion_service_keeps_location_related_false_analysis_for_review(tmp_path: Path) -> None:

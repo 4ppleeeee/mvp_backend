@@ -1,5 +1,5 @@
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import RedirectResponse, Response
@@ -16,10 +16,52 @@ from app.ingestion.service import IngestionService
 from app.models import IngestionJob, SourceEvidence, TravelSource
 
 
+_PLATFORM_LABELS = {
+    "youtube": "YouTube",
+    "bilibili": "Bilibili",
+    "douyin": "抖音",
+    "xiaohongshu": "小红书",
+    "xiaoyuzhou": "小宇宙",
+    "image": "图片资料",
+}
+_MEDIA_LABELS = {"video": "视频", "audio": "音频", "article": "网页", "image": "图片"}
+_STATUS_LABELS = {"succeeded": "已完成", "failed": "失败", "running": "处理中", "queued": "等待中"}
+_FAILURE_LABELS = {
+    "caption": "字幕获取失败",
+    "metadata": "元数据获取失败",
+    "audio": "媒体处理失败",
+    "video": "视频处理失败",
+    "keyframe": "关键帧处理失败",
+}
+
+
 def create_admin_router(settings: Settings) -> APIRouter:
     router = APIRouter(prefix="/admin")
     templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates" / "admin"))
     authenticator = AdminAuthenticator(settings)
+
+    def task_display(job: IngestionJob, source_title: str | None = None) -> dict[str, str]:
+        evidence_metadata = job.evidence_metadata_json or {}
+        analysis = job.analysis_json or {}
+        title = (
+            _nonempty_text(analysis.get("title"))
+            or _nonempty_text(evidence_metadata.get("title"))
+            or _nonempty_text(source_title)
+        )
+        platform = _PLATFORM_LABELS.get(job.source_platform or "", job.source_platform or "网页")
+        if not title:
+            title = "图片资料" if job.input_type == "image" else _fallback_task_title(platform, job.original_url)
+        metadata = f"{platform} · {_MEDIA_LABELS.get(job.media_type, job.media_type)} · {job.created_at.strftime('%m-%d %H:%M')}"
+        failure = ""
+        if job.status == "failed":
+            failure_label = _FAILURE_LABELS.get(job.failure_stage or "", "解析失败")
+            failure = f"{failure_label} · {_brief_error(job.error_message)}"
+        return {
+            "title": title,
+            "metadata": metadata,
+            "failure": failure,
+            "status": _STATUS_LABELS.get(job.status, job.status),
+        }
 
     def ensure_configured() -> None:
         if not authenticator.configured:
@@ -76,7 +118,22 @@ def create_admin_router(settings: Settings) -> APIRouter:
             return RedirectResponse("/admin/login", status_code=status.HTTP_303_SEE_OTHER)
         with Session(request.app.state.engine) as session:
             jobs = session.exec(select(IngestionJob).order_by(IngestionJob.created_at.desc()).limit(20)).all()
-        return templates.TemplateResponse(request, "dashboard.html", {"jobs": jobs})
+            source_ids = [job.source_id for job in jobs if job.source_id]
+            source_titles = {
+                source.source_id: source.title
+                for source in session.exec(select(TravelSource).where(TravelSource.source_id.in_(source_ids))).all()
+            } if source_ids else {}
+        return templates.TemplateResponse(
+            request,
+            "dashboard.html",
+            {
+                "jobs": jobs,
+                "task_displays": {
+                    job.job_id: task_display(job, source_titles.get(job.source_id or ""))
+                    for job in jobs
+                },
+            },
+        )
 
     @router.get("/sources")
     def sources(request: Request, source_id: str | None = None):
@@ -212,3 +269,28 @@ def create_admin_router(settings: Settings) -> APIRouter:
         return templates.TemplateResponse(request, "job_fragment.html", {"job": job, "source": source, "evidence": evidence})
 
     return router
+
+
+def _nonempty_text(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _fallback_task_title(platform: str, url: str | None) -> str:
+    if not url:
+        return f"{platform} 内容"
+    parsed = urlsplit(url)
+    identifier = parse_qs(parsed.query).get("v", [None])[0] or next(
+        (part for part in reversed(parsed.path.split("/")) if part),
+        None,
+    )
+    if not identifier:
+        return f"{platform} 内容"
+    return f"{platform} · {identifier[:14]}{'…' if len(identifier) > 14 else ''}"
+
+
+def _brief_error(message: str | None) -> str:
+    if not message:
+        return "请查看详情"
+    if "Fresh cookies" in message or "cookies are needed" in message:
+        return "平台拒绝当前请求"
+    return " ".join(message.split())[:72]

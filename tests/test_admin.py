@@ -86,6 +86,14 @@ def test_logged_in_admin_dashboard_exposes_url_and_image_submission(tmp_path: Pa
     assert 'class="task-workspace"' in response.text
 
 
+def test_admin_submit_css_keeps_url_submit_button_on_one_line() -> None:
+    stylesheet = Path("app/static/admin.css").read_text()
+
+    assert ".url-form { min-width: 0; }" in stylesheet
+    assert ".url-form input { width: 100%; min-width: 0; flex: 1 1 auto; }" in stylesheet
+    assert ".url-form button { flex: 0 0 auto; white-space: nowrap; }" in stylesheet
+
+
 def test_logged_in_admin_dashboard_uses_platform_logo_for_url_task(tmp_path: Path) -> None:
     client = configured_client(tmp_path)
     with Session(client.app.state.engine) as session:
@@ -104,8 +112,60 @@ def test_logged_in_admin_dashboard_uses_platform_logo_for_url_task(tmp_path: Pat
 
     assert response.status_code == 200
     assert 'class="task-icon task-icon-url platform-logo platform-xiaoyuzhou"' in response.text
-    assert "platform-icon-xiaoyuzhou" in response.text
+    assert 'class="platform-icon-img" src="/static/platform-icons/xiaoyuzhou.svg"' in response.text
     assert '>链<' not in response.text
+
+
+def test_logged_in_admin_dashboard_prefers_persisted_title_over_raw_url(tmp_path: Path) -> None:
+    client = configured_client(tmp_path)
+    raw_url = "https://v.douyin.com/9DLOqEFBaMM/"
+    with Session(client.app.state.engine) as session:
+        session.add(
+            IngestionJob(
+                input_type="url",
+                original_url=raw_url,
+                source_platform="douyin",
+                media_type="video",
+                status="failed",
+                stage="failed",
+                failure_stage="audio",
+                error_message="upstream audio failed",
+                evidence_metadata_json={"title": "给我 5 分钟，讲明白北京怎么玩", "source_platform": "douyin"},
+            )
+        )
+        session.commit()
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    response = client.get("/admin")
+
+    assert "给我 5 分钟，讲明白北京怎么玩" in response.text
+    assert raw_url not in response.text
+    assert "媒体处理失败" in response.text
+
+
+def test_logged_in_admin_dashboard_uses_existing_saved_source_title(tmp_path: Path) -> None:
+    client = configured_client(tmp_path)
+    source_id = create_saved_source(client)
+    raw_url = "https://xhslink.cn/o/example"
+    with Session(client.app.state.engine) as session:
+        session.add(
+            IngestionJob(
+                input_type="url",
+                original_url=raw_url,
+                source_id=source_id,
+                source_platform="xiaohongshu",
+                media_type="article",
+                status="succeeded",
+                stage="succeeded",
+            )
+        )
+        session.commit()
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+
+    response = client.get("/admin")
+
+    assert "北京：个人觉得无法超越的漂亮公园" in response.text
+    assert raw_url not in response.text
 
 
 def test_logged_in_admin_lists_only_saved_results(tmp_path: Path) -> None:
