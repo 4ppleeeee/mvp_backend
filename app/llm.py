@@ -60,6 +60,57 @@ class PoiDraftContent(BaseModel):
     local_tip: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
+    @field_validator("tags", "warnings", mode="before")
+    @classmethod
+    def _coerce_text_lists(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            normalized = value
+            for separator in ["，", "、", ";", "；", "\n"]:
+                normalized = normalized.replace(separator, ",")
+            return [item.strip() for item in normalized.split(",") if item.strip()]
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    @field_validator("rating", "ticket_price", mode="before")
+    @classmethod
+    def _coerce_optional_numbers(cls, value: Any) -> float | None:
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            text = value.strip().replace(",", "")
+            try:
+                return float(text)
+            except ValueError:
+                return None
+        return None
+
+    @field_validator("is_free", mode="before")
+    @classmethod
+    def _coerce_free_flag(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return int(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "free", "免费"}:
+                return 1
+            if normalized in {"0", "false", "no", "收费", "不免费"}:
+                return 0
+        return None
+
+    @field_validator("currency_code", mode="before")
+    @classmethod
+    def _coerce_currency(cls, value: Any) -> str:
+        return str(value or "CNY").upper()
+
 
 class OllamaLlmClient:
     _JSON_RETRY_INSTRUCTION = (
