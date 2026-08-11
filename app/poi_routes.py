@@ -230,7 +230,9 @@ def create_poi_router(settings: Settings) -> APIRouter:
             raise integration_error(exc) from exc
         poi_id = _extract_poi_id(remote)
         with Session(request.app.state.engine) as session:
-            record = session.exec(select(PoiCrawlRecord).where(PoiCrawlRecord.poi_id == poi_id)).first() if poi_id else None
+            record = session.exec(select(PoiCrawlRecord).where(PoiCrawlRecord.attraction_id == attraction_id)).first()
+            if record is None and poi_id:
+                record = session.exec(select(PoiCrawlRecord).where(PoiCrawlRecord.poi_id == poi_id)).first()
         return response({"attraction": remote, "local": _record_data(record) if record else None})
 
     @router.post("/api/attractions/{attraction_id}/update")

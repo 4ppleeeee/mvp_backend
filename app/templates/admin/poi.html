@@ -109,7 +109,7 @@
   function fillReviewTasks(){loadAttractions()}
   let attractionCursor="", attractionPrev="", attractionNext="", currentAttractionId="";
   function remoteToDraft(remote){
-    const a=remote?.attrInfo||remote||{};
+    const a=remote?.attrInfo||remote?.attr_info||remote||{};
     const pick=(snake,camel)=>a[snake]??a[camel]??null;
     return {attraction_id:remote?.attractionId||remote?.attraction_id||"",poi_provider:"tencent_map",poi_id:String(remote?.poiId||remote?.poi_id||""),poi_key:remote?.poiKey||remote?.poi_key||"",name:pick("name","name")||"",name_en:pick("name_en","nameEn"),country_name:pick("country_name","countryName"),city_name:pick("city_name","cityName"),tags:pick("tags","tags")||[],cover_image_url:pick("cover_image_url","coverImageUrl"),rating:pick("rating","rating"),is_free:pick("is_free","isFree"),ticket_price:pick("ticket_price","ticketPrice"),currency_code:pick("currency_code","currencyCode")||"CNY",opening_time:pick("opening_time","openingTime"),closing_time:pick("closing_time","closingTime"),description:pick("description","description"),best_season:pick("best_season","bestSeason"),recommended_visit_duration:pick("recommended_visit_duration","recommendedVisitDuration"),transportation:pick("transportation","transportation"),local_tip:pick("local_tip","localTip"),status:remote?.baseInfo?.status??remote?.status??0,warnings:[]};
   }
