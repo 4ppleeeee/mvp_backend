@@ -15,6 +15,10 @@ def _json_response(response: requests.Response, *, label: str) -> dict[str, Any]
     try:
         response.raise_for_status()
         payload = response.json()
+    except requests.HTTPError as exc:
+        detail = response.text.strip()
+        suffix = f"：{detail[:300]}" if detail else ""
+        raise PoiIntegrationError(f"{label} 请求失败（HTTP {response.status_code}）{suffix}") from exc
     except (requests.RequestException, ValueError) as exc:
         raise PoiIntegrationError(f"{label} 请求失败") from exc
     if not isinstance(payload, dict):

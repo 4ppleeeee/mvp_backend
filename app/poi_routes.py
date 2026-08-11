@@ -274,11 +274,17 @@ def _draft_to_attr_info(draft: dict[str, Any], record: PoiCrawlRecord) -> dict[s
         "tags": "tags",
         "name": "name",
     }
-    info: dict[str, Any] = {target: draft.get(source) for source, target in mapping.items() if draft.get(source) is not None}
-    info.setdefault("name", record.poi_name)
-    info.setdefault("cityName", record.poi_json.get("city") or record.poi_json.get("province") or "")
-    info.setdefault("countryName", "中国")
-    info.setdefault("currencyCode", "CNY")
+    info: dict[str, Any] = {target: draft.get(source) for source, target in mapping.items()}
+    info["name"] = info.get("name") or record.poi_name
+    info["cityName"] = info.get("cityName") or record.poi_json.get("city") or record.poi_json.get("province") or ""
+    info["countryName"] = info.get("countryName") or "中国"
+    info["currencyCode"] = info.get("currencyCode") or "CNY"
+    info["tags"] = info.get("tags") or []
+    for key in ("coverImageUrl", "description", "bestSeason", "recommendedVisitDuration", "transportation", "localTip", "nameEn", "openingTime", "closingTime"):
+        info[key] = info.get(key) or ""
+    for key in ("rating", "ticketPrice"):
+        info[key] = info.get(key) if info.get(key) is not None else 0
+    info["isFree"] = info.get("isFree") if info.get("isFree") is not None else 0
     return info
 
 

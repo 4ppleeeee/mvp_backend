@@ -76,7 +76,28 @@ def test_poi_create_maps_draft_to_remote_attr_info(tmp_path: Path, monkeypatch) 
     )
 
     assert response.status_code == 200
-    assert calls == [{"poi_id": "923456", "attr_info": {"name": "故宫博物院", "cityName": "北京", "description": "故宫介绍", "tags": ["博物馆"], "countryName": "中国", "currencyCode": "CNY"}}]
+    assert calls == [{
+        "poi_id": "923456",
+        "attr_info": {
+            "cityName": "北京",
+            "countryName": "中国",
+            "coverImageUrl": "",
+            "currencyCode": "CNY",
+            "description": "故宫介绍",
+            "isFree": 0,
+            "localTip": "",
+            "name": "故宫博物院",
+            "nameEn": "",
+            "openingTime": "",
+            "closingTime": "",
+            "rating": 0,
+            "recommendedVisitDuration": "",
+            "tags": ["博物馆"],
+            "ticketPrice": 0,
+            "transportation": "",
+            "bestSeason": "",
+        },
+    }]
     with Session(client.app.state.engine) as session:
         record = session.exec(select(PoiCrawlRecord)).one()
         assert record.attraction_id == "ATTR-1"
