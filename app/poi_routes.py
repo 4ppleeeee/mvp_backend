@@ -120,7 +120,7 @@ def create_poi_router(settings: Settings) -> APIRouter:
     def native_pages(request: Request, native_task_id: str, offset: int = 0, limit: int = 20):
         ensure_logged_in(request)
         try:
-            return response(CrawlabClient(settings).call("GET", f"/tasks/{native_task_id}/pages", params={"offset": offset, "limit": limit}))
+            return response(CrawlabClient(settings).call("GET", f"/tasks/{native_task_id}/pages", params={"offset": offset, "pageSize": limit}))
         except PoiIntegrationError as exc:
             raise integration_error(exc) from exc
 
@@ -151,7 +151,7 @@ def create_poi_router(settings: Settings) -> APIRouter:
             for source in sources:
                 if source.get("status") not in {"succeeded", "partially_succeeded"}:
                     continue
-                batch = CrawlabClient(settings).call("GET", f"/tasks/{source['nativeTaskId']}/pages", params={"offset": 0, "limit": 100})
+                batch = CrawlabClient(settings).call("GET", f"/tasks/{source['nativeTaskId']}/pages", params={"offset": 0, "pageSize": 100})
                 batch = batch.get("data") if isinstance(batch, dict) and isinstance(batch.get("data"), dict) else batch
                 if isinstance(batch, dict):
                     pages.extend(item for item in batch.get("pages", []) if isinstance(item, dict))

@@ -81,3 +81,19 @@ def test_poi_create_maps_draft_to_remote_attr_info(tmp_path: Path, monkeypatch) 
         record = session.exec(select(PoiCrawlRecord)).one()
         assert record.attraction_id == "ATTR-1"
         assert record.sync_status == "created"
+
+
+def test_native_pages_uses_crawlab_page_size_parameter(tmp_path: Path, monkeypatch) -> None:
+    client = configured_client(tmp_path)
+    client.post("/admin/login", data={"username": "admin", "password": "test-password"})
+    calls = []
+
+    def fake_call(self, method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {"pages": []}
+
+    monkeypatch.setattr("app.poi_routes.CrawlabClient.call", fake_call)
+    response = client.get("/admin/poi/api/tasks/native-1/pages?offset=20&limit=100")
+
+    assert response.status_code == 200
+    assert calls == [("GET", "/tasks/native-1/pages", {"params": {"offset": 20, "pageSize": 100}})]
