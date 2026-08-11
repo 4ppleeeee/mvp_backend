@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     llm_model: str = "gemma4:latest"
     llm_max_tokens: int = 220
     request_timeout_seconds: float = 240.0
+    crawlab_results_api_url: str = "http://results-api:8091"
+    crawlab_api_token: str | None = None
+    tencent_location_api_key: str | None = None
+    tencent_location_base_url: str = "https://apis.map.qq.com"
+    attraction_api_base_url: str = "https://x.inews.qq.com/travel/v1/admin"
     ingestion_temp_dir: str = "./ingestion-tmp"
     ingestion_max_attempts: int = 2
     ingestion_max_upload_bytes: int = 512 * 1024 * 1024

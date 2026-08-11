@@ -101,3 +101,19 @@ class IngestionReview(SQLModel, table=True):
     reason: str | None = None
     policy_version: str = Field(default="v1")
     created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class PoiCrawlRecord(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    crawl_task_id: str = Field(index=True)
+    poi_id: str = Field(index=True)
+    poi_key: str = Field(index=True)
+    poi_name: str
+    poi_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
+    source_urls: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    attraction_id: str | None = Field(default=None, index=True)
+    draft_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
+    sync_status: str = Field(default="draft", index=True)
+    sync_error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)

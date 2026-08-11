@@ -36,6 +36,7 @@ from app.ingestion.sources import SourceRegistry
 from app.ingestion.transcriber import BiliNoteWhisperTranscriber
 from app.ingestion.image_service import ImageIngestionService
 from app.admin_routes import create_admin_router
+from app.poi_routes import create_poi_router
 
 
 def create_app(settings: Settings | None = None, llm_client: object | None = None) -> FastAPI:
@@ -53,6 +54,7 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
     app.state.llm_client = client
     app.state.ingestion_executor = ThreadPoolExecutor(max_workers=1)
     app.include_router(create_admin_router(app_settings))
+    app.include_router(create_poi_router(app_settings))
 
     def get_session() -> Session:
         with Session(engine) as session:

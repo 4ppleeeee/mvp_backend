@@ -44,6 +44,23 @@ class TravelQuery(BaseModel):
     confidence: float = 0.0
 
 
+class PoiDraftContent(BaseModel):
+    city_name: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    rating: float | None = None
+    is_free: int | None = None
+    ticket_price: float | None = None
+    currency_code: str = "CNY"
+    opening_time: str | None = None
+    closing_time: str | None = None
+    description: str | None = None
+    best_season: str | None = None
+    recommended_visit_duration: str | None = None
+    transportation: str | None = None
+    local_tip: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class OllamaLlmClient:
     _JSON_RETRY_INSTRUCTION = (
         "\n\n上一次响应不是合法 JSON。请重新生成，只输出一个完整、合法且可解析的 JSON 对象，"
@@ -95,6 +112,29 @@ class OllamaLlmClient:
         )
         data = await self._chat_json(content)
         return _coerce_model(TravelQuery, data, fallback=TravelQuery(raw_intent=message))
+
+    async def generate_poi_draft(self, *, poi: dict[str, object], pages: list[dict[str, object]]) -> PoiDraftContent:
+        evidence: list[dict[str, str]] = []
+        remaining = 16000
+        for page in pages:
+            markdown = page.get("markdown")
+            if not isinstance(markdown, str) or not markdown.strip() or remaining <= 0:
+                continue
+            excerpt = markdown[:remaining]
+            evidence.append({"title": str(page.get("title") or ""), "url": str(page.get("url") or ""), "text": excerpt})
+            remaining -= len(excerpt)
+        content = (
+            "请根据可信 POI 和公开网页证据生成景点资料 JSON。"
+            "只使用证据中明确出现的信息，不得臆造评分、门票、开放时间、交通、预约规则或价格。"
+            "字段只能是 city_name, tags, rating, is_free, ticket_price, currency_code, opening_time, closing_time, "
+            "description, best_season, recommended_visit_duration, transportation, local_tip, warnings。"
+            "tags 是简短中文数组；description 不超过 240 个中文字符；warnings 是需要人工确认的事项数组。"
+            "is_free 只能填 0、1 或 null；没有证据的字段必须填 null。"
+            f"\n\n可信 POI：{json.dumps(poi, ensure_ascii=False)}"
+            f"\n\n网页证据：{json.dumps(evidence, ensure_ascii=False)}"
+        )
+        data = await self._chat_json(content)
+        return _coerce_model(PoiDraftContent, data, fallback=PoiDraftContent())
 
     async def recommend(self, *, message: str, query: TravelQuery, contexts: list[dict]) -> dict:
         content = (
