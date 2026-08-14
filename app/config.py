@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     admin_session_secret: str | None = None
     admin_api_enabled: bool = False
     admin_allowed_origins: str = ""
+    crawlab_results_api_url: str | None = None
+    crawlab_api_token: str | None = None
+    tencent_location_api_key: str | None = None
+    tencent_location_base_url: str | None = None
 
     @property
     def admin_cors_origins(self) -> list[str]:

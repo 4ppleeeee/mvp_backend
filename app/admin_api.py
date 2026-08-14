@@ -1,13 +1,15 @@
 import http.client
 import ipaddress
+import re
 import socket
 import ssl
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlsplit
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+import requests
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 from sqlmodel import Session, select
 
 from app.config import Settings
@@ -35,6 +37,9 @@ _FAILURE_LABELS = {
     "keyframe": "关键帧处理失败",
 }
 _MAX_COVER_BYTES = 5 * 1024 * 1024
+_CRAWLAB_TIMEOUT = (3, 60)
+_TENCENT_LOCATION_TIMEOUT = (3, 10)
+_TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 
 
 class UrlTaskRequest(BaseModel):
@@ -44,6 +49,16 @@ class UrlTaskRequest(BaseModel):
 class ReviewRequest(BaseModel):
     decision: str
     reason: str | None = None
+
+
+class PoiLocationSuggestionRequest(BaseModel):
+    keyword: str
+    region: str | None = None
+
+
+class PoiSearchRequest(BaseModel):
+    query: str = Field(max_length=500)
+    limit: StrictInt = 10
 
 
 def create_admin_api_router(settings: Settings) -> APIRouter:
@@ -168,7 +183,192 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="source cover not found")
         return _fetch_safe_cover(source.cover_image_url)
 
+    @router.post("/poi/location/suggest")
+    def suggest_poi_locations(payload: PoiLocationSuggestionRequest) -> dict[str, object]:
+        keyword = payload.keyword.strip()
+        region = payload.region.strip() if payload.region else ""
+        if not 1 <= len(keyword) <= 100:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="location keyword must be 1 to 100 characters")
+        if len(region) > 100:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="location region must be at most 100 characters")
+        if not settings.tencent_location_api_key or not settings.tencent_location_base_url:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Tencent location service is not configured")
+        try:
+            response = requests.get(
+                f"{settings.tencent_location_base_url.rstrip('/')}/ws/place/v1/suggestion",
+                params={"key": settings.tencent_location_api_key, "keyword": keyword, "region": region or None},
+                timeout=_TENCENT_LOCATION_TIMEOUT,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except requests.Timeout as exc:
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Tencent location service timed out") from exc
+        except (requests.RequestException, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Tencent location service request failed") from exc
+        if not isinstance(body, dict) or body.get("status") != 0:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Tencent location service request failed")
+        candidates = body.get("data")
+        return _poi_response(
+            {
+                "keyword": keyword,
+                "candidates": [_normalize_poi(item) for item in candidates[:5]] if isinstance(candidates, list) else [],
+            }
+        )
+
+    @router.post("/poi/crawls", status_code=status.HTTP_202_ACCEPTED)
+    def submit_poi_crawl(payload: dict[str, object]) -> dict[str, object]:
+        return _poi_response(_crawlab_api(settings, "POST", "/poi-crawls", payload=payload))
+
+    @router.get("/poi/crawls")
+    def list_poi_crawls(
+        poiKey: str | None = None,
+        status_filter: str | None = Query(default=None, alias="status"),
+        offset: int = 0,
+        limit: int = 20,
+    ) -> dict[str, object]:
+        if offset < 0 or not 1 <= limit <= 100:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid pagination")
+        params: dict[str, str | int] = {"offset": offset, "limit": limit}
+        if poiKey:
+            params["poiKey"] = poiKey
+        if status_filter:
+            params["status"] = status_filter
+        return _poi_response(_crawlab_api(settings, "GET", "/poi-crawls", params=params))
+
+    @router.get("/poi/crawls/{crawl_task_id}")
+    def get_poi_crawl_status(crawl_task_id: str) -> dict[str, object]:
+        return _poi_response(_crawlab_api(settings, "GET", f"/poi-crawls/{_task_identifier(crawl_task_id)}"))
+
+    @router.get("/poi/crawls/{crawl_task_id}/status", include_in_schema=False)
+    def poi_crawl_status_alias(crawl_task_id: str) -> dict[str, object]:
+        return get_poi_crawl_status(crawl_task_id)
+
+    @router.get("/poi/tasks/{native_task_id}/pages")
+    def read_poi_pages(
+        native_task_id: str,
+        crawl_task_id: str = Query(alias="crawlTaskId"),
+        offset: int = 0,
+        limit: int = 5,
+    ) -> dict[str, object]:
+        if offset < 0 or not 1 <= limit <= 10:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid pagination")
+        native_task_id = _task_identifier(native_task_id)
+        _confirm_poi_native_task(settings, crawl_task_id, native_task_id)
+        return _poi_response(
+            _crawlab_api(
+                settings,
+                "GET",
+                f"/tasks/{native_task_id}/pages",
+                params={"offset": offset, "limit": limit},
+            )
+        )
+
+    @router.post("/poi/tasks/{native_task_id}/search")
+    def search_poi_pages(
+        native_task_id: str,
+        payload: PoiSearchRequest,
+        crawl_task_id: str = Query(alias="crawlTaskId"),
+    ) -> dict[str, object]:
+        query = payload.query.strip()
+        if not query:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="query must not be empty")
+        if not 1 <= payload.limit <= 20:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="limit must be between 1 and 20")
+        native_task_id = _task_identifier(native_task_id)
+        _confirm_poi_native_task(settings, crawl_task_id, native_task_id)
+        return _poi_response(
+            _crawlab_api(
+                settings,
+                "POST",
+                f"/tasks/{native_task_id}/search",
+                payload={"query": query, "limit": payload.limit},
+            )
+        )
+
     return router
+
+
+def _poi_response(payload: object) -> dict[str, object]:
+    return {"ok": True, "data": payload}
+
+
+def _normalize_poi(item: object) -> dict[str, object]:
+    source = item if isinstance(item, dict) else {}
+    ad_info = source.get("ad_info") if isinstance(source.get("ad_info"), dict) else {}
+    location = source.get("location") if isinstance(source.get("location"), dict) else {}
+    poi_id = str(source.get("id") or "")
+    return {
+        "poiId": poi_id,
+        "poiKey": f"tencent_map:{poi_id}",
+        "name": source.get("title") or "",
+        "address": source.get("address") or "",
+        "province": ad_info.get("province") or "",
+        "city": ad_info.get("city") or "",
+        "district": ad_info.get("district") or "",
+        "category": source.get("category") or "",
+        "latitude": location.get("lat"),
+        "longitude": location.get("lng"),
+    }
+
+
+def _task_identifier(task_id: str) -> str:
+    if not _TASK_ID_PATTERN.fullmatch(task_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid task identifier")
+    return task_id
+
+
+def _confirm_poi_native_task(settings: Settings, crawl_task_id: str, native_task_id: str) -> None:
+    aggregate = _crawlab_api(settings, "GET", f"/poi-crawls/{_task_identifier(crawl_task_id)}")
+    sources = aggregate.get("sources") if isinstance(aggregate, dict) else None
+    if not isinstance(sources, list) or not any(
+        isinstance(source, dict) and source.get("nativeTaskId") == native_task_id for source in sources
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="POI crawl source was not found")
+
+
+def _crawlab_api(
+    settings: Settings,
+    method: str,
+    path: str,
+    *,
+    payload: object | None = None,
+    params: dict[str, str | int] | None = None,
+) -> object:
+    if not settings.crawlab_results_api_url or not settings.crawlab_api_token:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Crawlab API is not configured")
+    kwargs: dict[str, object] = {
+        "headers": {"Authorization": f"Bearer {settings.crawlab_api_token}"},
+        "timeout": _CRAWLAB_TIMEOUT,
+    }
+    if payload is not None:
+        kwargs["json"] = payload
+    if params is not None:
+        kwargs["params"] = params
+    try:
+        response = requests.request(method, f"{settings.crawlab_results_api_url.rstrip('/')}/api/v1{path}", **kwargs)
+        response.raise_for_status()
+        return response.json()
+    except requests.Timeout as exc:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Crawlab API timed out") from exc
+    except requests.HTTPError as exc:
+        response = exc.response
+        status_code = response.status_code if response is not None else status.HTTP_502_BAD_GATEWAY
+        if 400 <= status_code < 500:
+            raise HTTPException(status_code=status_code, detail=_crawlab_client_error_detail(response)) from exc
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Crawlab API request failed") from exc
+    except (requests.RequestException, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Crawlab API request failed") from exc
+
+
+def _crawlab_client_error_detail(response: object) -> object:
+    try:
+        body = response.json()  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        return "Crawlab API rejected request"
+    if not isinstance(body, dict):
+        return "Crawlab API rejected request"
+    detail = body.get("detail", body)
+    return detail if isinstance(detail, (dict, list)) else "Crawlab API rejected request"
 
 
 def _bounded_limit(limit: int, default: int) -> int:

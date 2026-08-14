@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import requests
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
@@ -30,6 +31,52 @@ def make_client(tmp_path: Path, *, max_upload_bytes: int = 512 * 1024 * 1024) ->
     executor = RecordingExecutor()
     app.state.ingestion_executor = executor
     return TestClient(app), executor
+
+
+def make_poi_client(tmp_path: Path) -> TestClient:
+    app = create_app(
+        settings=Settings(
+            database_url=f"sqlite:///{tmp_path / 'poi-admin-api.db'}",
+            uploads_dir=str(tmp_path / "uploads"),
+            ingestion_temp_dir=str(tmp_path / "ingestion"),
+            admin_api_enabled=True,
+            crawlab_results_api_url="https://crawlab.internal",
+            crawlab_api_token="crawlab-test-token",
+            tencent_location_api_key="tencent-test-key",
+            tencent_location_base_url="https://location.example",
+        )
+    )
+    return TestClient(app)
+
+
+class UpstreamJsonResponse:
+    def __init__(self, body: object) -> None:
+        self.body = body
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> object:
+        return self.body
+
+
+class UpstreamHttpErrorResponse(UpstreamJsonResponse):
+    def __init__(self, status_code: int, body: object) -> None:
+        super().__init__(body)
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        import requests
+
+        raise requests.HTTPError(response=self)
+
+
+class InvalidJsonResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> object:
+        raise ValueError("invalid upstream JSON")
 
 
 def add_review_job(client: TestClient) -> str:
@@ -241,3 +288,289 @@ def test_admin_api_uses_the_configured_cors_origin_allowlist(tmp_path: Path) -> 
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "https://admin-test.example"
+
+
+def test_poi_location_suggestions_are_normalized_without_exposing_the_tencent_key(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    def suggestion_get(url: str, **kwargs: object) -> UpstreamJsonResponse:
+        calls.append({"url": url, **kwargs})
+        return UpstreamJsonResponse(
+            {
+                "status": 0,
+                "data": [
+                    {
+                        "id": "poi-123",
+                        "title": "故宫博物院",
+                        "address": "景山前街4号",
+                        "category": "旅游景点",
+                        "ad_info": {"province": "北京市", "city": "北京市", "district": "东城区"},
+                        "location": {"lat": 39.916, "lng": 116.397},
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("requests.get", suggestion_get)
+
+    response = client.post("/admin-api/poi/location/suggest", json={"keyword": "故宫", "region": "北京"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "data": {
+            "keyword": "故宫",
+            "candidates": [
+                {
+                    "poiId": "poi-123",
+                    "poiKey": "tencent_map:poi-123",
+                    "name": "故宫博物院",
+                    "address": "景山前街4号",
+                    "province": "北京市",
+                    "city": "北京市",
+                    "district": "东城区",
+                    "category": "旅游景点",
+                    "latitude": 39.916,
+                    "longitude": 116.397,
+                }
+            ],
+        },
+    }
+    assert calls == [
+        {
+            "url": "https://location.example/ws/place/v1/suggestion",
+            "params": {"key": "tencent-test-key", "keyword": "故宫", "region": "北京"},
+            "timeout": (3, 10),
+        }
+    ]
+    assert "tencent-test-key" not in response.text
+
+
+def test_poi_crawlab_routes_forward_the_contract_with_server_side_bearer_auth(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    def crawlab_request(method: str, url: str, **kwargs: object) -> UpstreamJsonResponse:
+        calls.append({"method": method, "url": url, **kwargs})
+        if url.endswith("/poi-crawls/crawl-123"):
+            return UpstreamJsonResponse({"crawlTaskId": "crawl-123", "sources": [{"nativeTaskId": "native-123"}]})
+        return UpstreamJsonResponse({"upstream": url.rsplit("/api/v1", 1)[1]})
+
+    monkeypatch.setattr("requests.request", crawlab_request)
+
+    submitted = client.post("/admin-api/poi/crawls", json={"poi": {"poiId": "poi-123"}, "sourceUrls": ["https://example.com"]})
+    listed = client.get("/admin-api/poi/crawls?poiKey=tencent_map:poi-123&status=running&offset=2&limit=4")
+    status_response = client.get("/admin-api/poi/crawls/crawl-123/status")
+    pages = client.get("/admin-api/poi/tasks/native-123/pages?crawlTaskId=crawl-123&offset=3&limit=5")
+    searched = client.post("/admin-api/poi/tasks/native-123/search?crawlTaskId=crawl-123", json={"query": "宫殿", "limit": 6})
+
+    assert submitted.status_code == 202
+    for response in (listed, status_response, pages, searched):
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert "crawlab-test-token" not in response.text
+    assert calls == [
+        {
+            "method": "POST",
+            "url": "https://crawlab.internal/api/v1/poi-crawls",
+            "json": {"poi": {"poiId": "poi-123"}, "sourceUrls": ["https://example.com"]},
+            "headers": {"Authorization": "Bearer crawlab-test-token"},
+            "timeout": (3, 60),
+        },
+        {
+            "method": "GET",
+            "url": "https://crawlab.internal/api/v1/poi-crawls",
+            "params": {"poiKey": "tencent_map:poi-123", "status": "running", "offset": 2, "limit": 4},
+            "headers": {"Authorization": "Bearer crawlab-test-token"},
+            "timeout": (3, 60),
+        },
+        {
+            "method": "GET",
+            "url": "https://crawlab.internal/api/v1/poi-crawls/crawl-123",
+            "headers": {"Authorization": "Bearer crawlab-test-token"},
+            "timeout": (3, 60),
+        },
+        {
+            "method": "GET",
+            "url": "https://crawlab.internal/api/v1/poi-crawls/crawl-123",
+            "headers": {"Authorization": "Bearer crawlab-test-token"},
+            "timeout": (3, 60),
+        },
+        {
+            "method": "GET",
+            "url": "https://crawlab.internal/api/v1/tasks/native-123/pages",
+            "params": {"offset": 3, "limit": 5},
+            "headers": {"Authorization": "Bearer crawlab-test-token"},
+            "timeout": (3, 60),
+        },
+        {
+            "method": "GET",
+            "url": "https://crawlab.internal/api/v1/poi-crawls/crawl-123",
+            "headers": {"Authorization": "Bearer crawlab-test-token"},
+            "timeout": (3, 60),
+        },
+        {
+            "method": "POST",
+            "url": "https://crawlab.internal/api/v1/tasks/native-123/search",
+            "json": {"query": "宫殿", "limit": 6},
+            "headers": {"Authorization": "Bearer crawlab-test-token"},
+            "timeout": (3, 60),
+        },
+    ]
+
+
+def test_poi_routes_reject_invalid_requests_and_report_unconfigured_services_safely(tmp_path: Path) -> None:
+    app = create_app(
+        settings=Settings(
+            database_url=f"sqlite:///{tmp_path / 'poi-unconfigured.db'}",
+            admin_api_enabled=True,
+            crawlab_api_token="private-crawlab-token",
+            tencent_location_api_key="private-tencent-key",
+        )
+    )
+    client = TestClient(app)
+
+    empty_keyword = client.post("/admin-api/poi/location/suggest", json={"keyword": ""})
+    unconfigured_crawlab = client.get("/admin-api/poi/crawls")
+
+    assert empty_keyword.status_code == 400
+    assert unconfigured_crawlab.status_code == 503
+    assert "private-crawlab-token" not in unconfigured_crawlab.text
+    assert "private-tencent-key" not in empty_keyword.text
+
+
+def test_poi_crawl_submission_preserves_the_upstream_accepted_status(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    monkeypatch.setattr("requests.request", lambda *args, **kwargs: UpstreamJsonResponse({"crawlTaskId": "crawl-123"}))
+
+    response = client.post("/admin-api/poi/crawls", json={"poi": {"poiId": "poi-123"}, "sourceUrls": ["https://example.com"]})
+
+    assert response.status_code == 202
+    assert response.json() == {"ok": True, "data": {"crawlTaskId": "crawl-123"}}
+
+
+def test_poi_crawl_status_is_available_at_the_canonical_aggregate_route(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    calls: list[str] = []
+
+    def crawlab_request(method: str, url: str, **kwargs: object) -> UpstreamJsonResponse:
+        calls.append(f"{method} {url}")
+        return UpstreamJsonResponse({"crawlTaskId": "crawl-123", "sources": []})
+
+    monkeypatch.setattr("requests.request", crawlab_request)
+
+    response = client.get("/admin-api/poi/crawls/crawl-123")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["crawlTaskId"] == "crawl-123"
+    assert calls == ["GET https://crawlab.internal/api/v1/poi-crawls/crawl-123"]
+
+
+def test_poi_native_reads_verify_the_aggregate_source_before_forwarding(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    calls: list[str] = []
+
+    def crawlab_request(method: str, url: str, **kwargs: object) -> UpstreamJsonResponse:
+        calls.append(f"{method} {url}")
+        if url.endswith("/poi-crawls/crawl-123"):
+            return UpstreamJsonResponse({"crawlTaskId": "crawl-123", "sources": [{"nativeTaskId": "native-123"}]})
+        return UpstreamJsonResponse({"task_id": "native-123"})
+
+    monkeypatch.setattr("requests.request", crawlab_request)
+
+    pages = client.get("/admin-api/poi/tasks/native-123/pages?crawlTaskId=crawl-123&offset=0&limit=2")
+    searched = client.post("/admin-api/poi/tasks/native-123/search?crawlTaskId=crawl-123", json={"query": "宫殿", "limit": 2})
+
+    assert pages.status_code == 200
+    assert searched.status_code == 200
+    assert calls == [
+        "GET https://crawlab.internal/api/v1/poi-crawls/crawl-123",
+        "GET https://crawlab.internal/api/v1/tasks/native-123/pages",
+        "GET https://crawlab.internal/api/v1/poi-crawls/crawl-123",
+        "POST https://crawlab.internal/api/v1/tasks/native-123/search",
+    ]
+
+
+def test_poi_native_reads_reject_a_task_not_confirmed_by_its_aggregate(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    calls: list[str] = []
+
+    def crawlab_request(method: str, url: str, **kwargs: object) -> UpstreamJsonResponse:
+        calls.append(f"{method} {url}")
+        return UpstreamJsonResponse({"crawlTaskId": "crawl-123", "sources": [{"nativeTaskId": "other-native"}]})
+
+    monkeypatch.setattr("requests.request", crawlab_request)
+
+    response = client.get("/admin-api/poi/tasks/native-123/pages?crawlTaskId=crawl-123")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "POI crawl source was not found"
+    assert calls == ["GET https://crawlab.internal/api/v1/poi-crawls/crawl-123"]
+
+
+def test_poi_crawlab_client_errors_preserve_structured_feedback_without_secrets(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    monkeypatch.setattr(
+        "requests.request",
+        lambda *args, **kwargs: UpstreamHttpErrorResponse(
+            400,
+            {"code": "INVALID_SOURCE_URL", "message": "source URL must be public HTTP(S)"},
+        ),
+    )
+
+    response = client.post("/admin-api/poi/crawls", json={"poi": {"poiId": "poi-123"}, "sourceUrls": ["bad"]})
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": {"code": "INVALID_SOURCE_URL", "message": "source URL must be public HTTP(S)"}}
+    assert "crawlab-test-token" not in response.text
+
+
+def test_poi_search_rejects_a_boolean_limit_without_contacting_crawlab(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    monkeypatch.setattr(
+        "requests.request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Crawlab should not be called")),
+    )
+
+    response = client.post("/admin-api/poi/tasks/native-123/search?crawlTaskId=crawl-123", json={"query": "宫殿", "limit": True})
+
+    assert response.status_code == 422
+
+
+def test_poi_search_rejects_a_query_longer_than_500_characters_without_contacting_crawlab(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    monkeypatch.setattr(
+        "requests.request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Crawlab should not be called")),
+    )
+
+    response = client.post(
+        "/admin-api/poi/tasks/native-123/search?crawlTaskId=crawl-123",
+        json={"query": "x" * 501, "limit": 1},
+    )
+
+    assert response.status_code == 422
+
+
+def test_poi_crawlab_failures_map_to_safe_gateway_errors_without_credentials(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    failures: list[tuple[object, int]] = [
+        (requests.Timeout("upstream timeout"), 504),
+        (requests.ConnectionError("upstream connection failed"), 502),
+        (InvalidJsonResponse(), 502),
+        (UpstreamHttpErrorResponse(500, {"message": "upstream failure"}), 502),
+    ]
+
+    for upstream, expected_status in failures:
+        def crawlab_request(*args: object, _upstream: object = upstream, **kwargs: object) -> object:
+            if isinstance(_upstream, BaseException):
+                raise _upstream
+            return _upstream
+
+        monkeypatch.setattr("requests.request", crawlab_request)
+        response = client.post("/admin-api/poi/crawls", json={"poi": {"poiId": "poi-123"}, "sourceUrls": ["https://example.com"]})
+
+        assert response.status_code == expected_status
+        assert "crawlab-test-token" not in response.text
+        assert "tencent-test-key" not in response.text
