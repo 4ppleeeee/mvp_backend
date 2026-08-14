@@ -20,7 +20,7 @@ Browser
           -> Crawlab results API (Bearer token only in FastAPI)
 ```
 
-前端从 `VITE_ADMIN_API_BASE_URL` 读取 API 基址；为空时使用同域相对路径。后端用 `TRIPGUARD_ADMIN_ALLOWED_ORIGINS` 限定 FUE test 域名。CORS 只用于浏览器兼容，不能替代未来的 FUE 网关认证。
+前端从 `VITE_ADMIN_API_BASE_URL` 读取 API 基址；为空时使用同域相对路径。后端用 `TRIPGUARD_ADMIN_ALLOWED_ORIGINS` 限定 FUE test 域名，并且只有显式设置 `TRIPGUARD_ADMIN_API_ENABLED=true` 才注册 `/admin-api/*`；默认不注册，避免无登录 BFF 被意外暴露。CORS 只用于浏览器兼容，不能替代未来的 FUE 网关认证；启用该开关的环境仍必须由 FUE 网关认证保护。
 
 ## 后端 BFF 契约
 

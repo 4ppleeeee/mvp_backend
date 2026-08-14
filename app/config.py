@@ -24,5 +24,11 @@ class Settings(BaseSettings):
     admin_username: str | None = None
     admin_password_hash: str | None = None
     admin_session_secret: str | None = None
+    admin_api_enabled: bool = False
+    admin_allowed_origins: str = ""
+
+    @property
+    def admin_cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.admin_allowed_origins.split(",") if origin.strip()]
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="TRIPGUARD_", extra="ignore")
