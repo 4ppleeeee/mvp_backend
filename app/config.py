@@ -21,9 +21,6 @@ class Settings(BaseSettings):
     video_frame_interval_seconds: int = 6
     video_grid_rows: int = 2
     video_grid_columns: int = 2
-    admin_username: str | None = None
-    admin_password_hash: str | None = None
-    admin_session_secret: str | None = None
     admin_api_enabled: bool = False
     admin_allowed_origins: str = ""
     crawlab_results_api_url: str | None = None

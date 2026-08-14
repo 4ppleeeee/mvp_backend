@@ -120,6 +120,17 @@ def test_admin_api_lists_title_first_tasks_without_a_legacy_session(tmp_path: Pa
     assert task["display"]["status"] == "已完成"
 
 
+def test_enabled_admin_api_replaces_the_legacy_admin_html_route(tmp_path: Path) -> None:
+    client, _ = make_client(tmp_path)
+
+    legacy_page = client.get("/admin", follow_redirects=False)
+    tasks = client.get("/admin-api/tasks")
+
+    assert legacy_page.status_code == 404
+    assert tasks.status_code == 200
+    assert tasks.json() == {"tasks": []}
+
+
 def test_admin_api_is_disabled_until_explicitly_enabled_for_the_test_or_gateway_environment(tmp_path: Path) -> None:
     app = create_app(settings=Settings(database_url=f"sqlite:///{tmp_path / 'disabled.db'}"))
 

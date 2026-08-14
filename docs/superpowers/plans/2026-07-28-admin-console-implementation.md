@@ -1,5 +1,10 @@
 # TripGuard 管理后台 Implementation Plan
 
+> **历史记录，已被 2026-08-14 的 Admin Web Split 取代。** 本计划中的
+> `app/admin_routes.py`、`app/admin_auth.py`、Jinja 模板、静态 CSS、会话和
+> `TRIPGUARD_ADMIN_USERNAME`/`PASSWORD_HASH`/`SESSION_SECRET` 配置均已移除。
+> 当前管理入口仅为受网关保护且显式启用的 `/admin-api/*` JSON BFF；不要执行本计划。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver a password-protected management console for URL/image ingestion, live job status and persisted results.

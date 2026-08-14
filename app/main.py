@@ -2,9 +2,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, status
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
@@ -36,7 +34,6 @@ from app.ingestion.service import IngestionService
 from app.ingestion.sources import SourceRegistry
 from app.ingestion.transcriber import BiliNoteWhisperTranscriber
 from app.ingestion.image_service import ImageIngestionService
-from app.admin_routes import create_admin_router
 from app.admin_api import create_admin_api_router
 
 
@@ -48,7 +45,6 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
     init_db(engine)
 
     app = FastAPI(title="TripGuard MVP Backend", version="0.1.0")
-    app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
     if app_settings.admin_cors_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -56,12 +52,10 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             allow_methods=["GET", "POST"],
             allow_headers=["Content-Type"],
         )
-    app.add_middleware(SessionMiddleware, secret_key=app_settings.admin_session_secret or "admin-auth-unconfigured")
     app.state.settings = app_settings
     app.state.engine = engine
     app.state.llm_client = client
     app.state.ingestion_executor = ThreadPoolExecutor(max_workers=1)
-    app.include_router(create_admin_router(app_settings))
     if app_settings.admin_api_enabled:
         app.include_router(create_admin_api_router(app_settings))
 
