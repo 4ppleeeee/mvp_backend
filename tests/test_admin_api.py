@@ -139,6 +139,24 @@ def test_admin_api_is_disabled_until_explicitly_enabled_for_the_test_or_gateway_
     assert response.status_code == 404
 
 
+def test_admin_api_cors_allows_browser_credentials_from_the_configured_console_origin(tmp_path: Path) -> None:
+    client, _ = make_client(tmp_path)
+
+    response = client.options(
+        "/admin-api/tasks",
+        headers={
+            "Origin": "https://admin-test.example",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://admin-test.example"
+    assert response.headers["access-control-allow-credentials"] == "true"
+    assert "authorization" in response.headers["access-control-allow-headers"].lower()
+
+
 def test_admin_api_submits_url_and_image_jobs(tmp_path: Path) -> None:
     client, executor = make_client(tmp_path)
 

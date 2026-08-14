@@ -50,7 +50,8 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
             CORSMiddleware,
             allow_origins=app_settings.admin_cors_origins,
             allow_methods=["GET", "POST"],
-            allow_headers=["Content-Type"],
+            allow_headers=["Authorization", "Content-Type"],
+            allow_credentials=True,
         )
     app.state.settings = app_settings
     app.state.engine = engine
