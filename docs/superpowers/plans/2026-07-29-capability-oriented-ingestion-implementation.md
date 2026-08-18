@@ -1,5 +1,9 @@
 # 面向能力的 Ingestion 编排实施计划
 
+> **历史记录。** 本文后续提及的 `app/admin_routes.py` 与 `tests/test_admin.py`
+> 已在 2026-08-14 的 Admin Web Split 中移除。后续采集回归应覆盖一般 API 或
+> `/admin-api/*` JSON BFF，而不是重新引入嵌入式管理页面。
+
 > **给执行代理的说明：** 必须使用 `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`，按任务逐项执行。所有步骤使用复选框跟踪。
 
 **目标：** 将 Ingestion 调度重构为基于来源适配器和能力的编排，接入小宇宙公开音频，同时保持现有平台行为。
