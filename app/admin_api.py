@@ -285,6 +285,39 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
             )
         )
 
+    @router.get("/poi/attractions")
+    def list_attractions(
+        cursor: str = "",
+        direction: int = 0,
+        page_size: int = Query(default=20, alias="pageSize"),
+    ) -> dict[str, object]:
+        if direction not in {-1, 0, 1} or not 1 <= page_size <= 50:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid attraction pagination")
+        return _poi_response(_attraction_api(settings, "/attraction/batchGet", {"cursor": cursor, "direction": direction, "pageSize": page_size}))
+
+    @router.get("/poi/attractions/{attraction_id}")
+    def get_attraction(attraction_id: str) -> dict[str, object]:
+        return _poi_response(_attraction_api(settings, "/attraction/get", {"attractionId": _task_identifier(attraction_id)}))
+
+    @router.post("/poi/attractions")
+    def create_attraction(payload: dict[str, object]) -> dict[str, object]:
+        poi_id = str(payload.get("poiId") or "").strip()
+        attr_info = payload.get("attrInfo")
+        if not poi_id or not isinstance(attr_info, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="poiId and attrInfo are required")
+        return _poi_response(_attraction_api(settings, "/attraction/create", {"poiId": poi_id, "attrInfo": attr_info}))
+
+    @router.post("/poi/attractions/{attraction_id}")
+    def update_attraction(attraction_id: str, payload: dict[str, object]) -> dict[str, object]:
+        attr_info = payload.get("attrInfo")
+        if not isinstance(attr_info, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="attrInfo is required")
+        body: dict[str, object] = {"attractionId": _task_identifier(attraction_id), "attrInfo": attr_info}
+        base_info = payload.get("baseInfo")
+        if isinstance(base_info, dict):
+            body["baseInfo"] = base_info
+        return _poi_response(_attraction_api(settings, "/attraction/update", body))
+
     return router
 
 
@@ -358,6 +391,30 @@ def _crawlab_api(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Crawlab API request failed") from exc
     except (requests.RequestException, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Crawlab API request failed") from exc
+
+
+def _attraction_api(settings: Settings, path: str, payload: dict[str, object]) -> object:
+    if not settings.attraction_api_base_url:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Attraction API is not configured")
+    try:
+        response = requests.request(
+            "POST",
+            f"{settings.attraction_api_base_url.rstrip('/')}{path}",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=(3, 30),
+        )
+        response.raise_for_status()
+        body = response.json()
+    except requests.Timeout as exc:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Attraction API timed out") from exc
+    except (requests.RequestException, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Attraction API request failed") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Attraction API request failed")
+    if body.get("code") not in (None, 0):
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Attraction API request failed")
+    return body.get("data") if isinstance(body.get("data"), dict) else body
 
 
 def _crawlab_client_error_detail(response: object) -> object:

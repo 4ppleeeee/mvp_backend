@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     crawlab_api_token: str | None = None
     tencent_location_api_key: str | None = None
     tencent_location_base_url: str | None = None
+    attraction_api_base_url: str | None = None
 
     @property
     def admin_cors_origins(self) -> list[str]:

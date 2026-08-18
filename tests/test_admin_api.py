@@ -44,6 +44,7 @@ def make_poi_client(tmp_path: Path) -> TestClient:
             crawlab_api_token="crawlab-test-token",
             tencent_location_api_key="tencent-test-key",
             tencent_location_base_url="https://location.example",
+            attraction_api_base_url="https://attraction.internal",
         )
     )
     return TestClient(app)
@@ -77,6 +78,31 @@ class InvalidJsonResponse:
 
     def json(self) -> object:
         raise ValueError("invalid upstream JSON")
+
+
+def test_attraction_routes_proxy_list_detail_create_and_update(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    calls: list[tuple[str, str, object]] = []
+
+    def attraction_request(method: str, url: str, **kwargs: object) -> UpstreamJsonResponse:
+        calls.append((method, url, kwargs.get("json")))
+        return UpstreamJsonResponse({"code": 0, "data": {"attractionId": "attr-123", "name": "故宫博物院"}})
+
+    monkeypatch.setattr("requests.request", attraction_request)
+
+    listed = client.get("/admin-api/poi/attractions?cursor=next&pageSize=5")
+    detail = client.get("/admin-api/poi/attractions/attr-123")
+    created = client.post("/admin-api/poi/attractions", json={"poiId": "poi-123", "attrInfo": {"name": "故宫博物院"}})
+    updated = client.post("/admin-api/poi/attractions/attr-123", json={"attrInfo": {"name": "故宫博物院"}, "baseInfo": {"status": 1}})
+
+    assert [response.status_code for response in (listed, detail, created, updated)] == [200, 200, 200, 200]
+    assert listed.json() == {"ok": True, "data": {"attractionId": "attr-123", "name": "故宫博物院"}}
+    assert calls == [
+        ("POST", "https://attraction.internal/attraction/batchGet", {"cursor": "next", "direction": 0, "pageSize": 5}),
+        ("POST", "https://attraction.internal/attraction/get", {"attractionId": "attr-123"}),
+        ("POST", "https://attraction.internal/attraction/create", {"poiId": "poi-123", "attrInfo": {"name": "故宫博物院"}}),
+        ("POST", "https://attraction.internal/attraction/update", {"attractionId": "attr-123", "attrInfo": {"name": "故宫博物院"}, "baseInfo": {"status": 1}}),
+    ]
 
 
 def add_review_job(client: TestClient) -> str:
