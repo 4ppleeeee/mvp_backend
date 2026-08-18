@@ -293,11 +293,15 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
     ) -> dict[str, object]:
         if direction not in {-1, 0, 1} or not 1 <= page_size <= 50:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid attraction pagination")
-        return _poi_response(_attraction_api(settings, "/attraction/batchGet", {"cursor": cursor, "direction": direction, "pageSize": page_size}))
+        return _poi_response(_attraction_list_payload(
+            _attraction_api(settings, "/attraction/batchGet", {"cursor": cursor, "direction": direction, "pageSize": page_size})
+        ))
 
     @router.get("/poi/attractions/{attraction_id}")
     def get_attraction(attraction_id: str) -> dict[str, object]:
-        return _poi_response(_attraction_api(settings, "/attraction/get", {"attractionId": _task_identifier(attraction_id)}))
+        return _poi_response(_attraction_detail_payload(
+            _attraction_api(settings, "/attraction/get", {"attractionId": _task_identifier(attraction_id)})
+        ))
 
     @router.post("/poi/attractions")
     def create_attraction(payload: dict[str, object]) -> dict[str, object]:
@@ -323,6 +327,42 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
 
 def _poi_response(payload: object) -> dict[str, object]:
     return {"ok": True, "data": payload}
+
+
+def _attraction_list_payload(payload: object) -> dict[str, object]:
+    source = payload if isinstance(payload, dict) else {}
+    items = source.get("items")
+    return {
+        "items": [_attraction_summary(item) for item in items] if isinstance(items, list) else [],
+        "nextCursor": source.get("next_cursor", source.get("nextCursor", "")),
+        "prevCursor": source.get("prev_cursor", source.get("prevCursor", "")),
+        "totalCount": source.get("total_count", source.get("totalCount", 0)),
+    }
+
+
+def _attraction_detail_payload(payload: object) -> dict[str, object]:
+    source = payload if isinstance(payload, dict) else {}
+    summary = _attraction_summary(source)
+    attr_info = source.get("attr_info", source.get("attrInfo", {}))
+    return {
+        **summary,
+        "attrInfo": attr_info if isinstance(attr_info, dict) else {},
+        "baseInfo": {"status": summary["status"]} if summary["status"] is not None else {},
+        "raw": source,
+    }
+
+
+def _attraction_summary(payload: object) -> dict[str, object]:
+    source = payload if isinstance(payload, dict) else {}
+    attraction_id = source.get("attraction_id", source.get("attractionId", source.get("id", "")))
+    poi_id = source.get("poi_id", source.get("poiId", ""))
+    attr_info = source.get("attr_info", source.get("attrInfo", {}))
+    return {
+        "attractionId": str(attraction_id) if attraction_id is not None else "",
+        "poiId": str(poi_id) if poi_id is not None else "",
+        "name": source.get("name") or (attr_info.get("name") if isinstance(attr_info, dict) else "") or "",
+        "status": source.get("status"),
+    }
 
 
 def _normalize_poi(item: object) -> dict[str, object]:

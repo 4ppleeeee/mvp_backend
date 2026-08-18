@@ -86,6 +86,8 @@ def test_attraction_routes_proxy_list_detail_create_and_update(tmp_path: Path, m
 
     def attraction_request(method: str, url: str, **kwargs: object) -> UpstreamJsonResponse:
         calls.append((method, url, kwargs.get("json")))
+        if url.endswith("/attraction/batchGet"):
+            return UpstreamJsonResponse({"code": 0, "data": {"items": [{"attractionId": "attr-123", "name": "故宫博物院"}]}})
         return UpstreamJsonResponse({"code": 0, "data": {"attractionId": "attr-123", "name": "故宫博物院"}})
 
     monkeypatch.setattr("requests.request", attraction_request)
@@ -96,13 +98,37 @@ def test_attraction_routes_proxy_list_detail_create_and_update(tmp_path: Path, m
     updated = client.post("/admin-api/poi/attractions/attr-123", json={"attrInfo": {"name": "故宫博物院"}, "baseInfo": {"status": 1}})
 
     assert [response.status_code for response in (listed, detail, created, updated)] == [200, 200, 200, 200]
-    assert listed.json() == {"ok": True, "data": {"attractionId": "attr-123", "name": "故宫博物院"}}
+    assert listed.json()["data"]["items"] == [{"attractionId": "attr-123", "poiId": "", "name": "故宫博物院", "status": None}]
     assert calls == [
         ("POST", "https://attraction.internal/attraction/batchGet", {"cursor": "next", "direction": 0, "pageSize": 5}),
         ("POST", "https://attraction.internal/attraction/get", {"attractionId": "attr-123"}),
         ("POST", "https://attraction.internal/attraction/create", {"poiId": "poi-123", "attrInfo": {"name": "故宫博物院"}}),
         ("POST", "https://attraction.internal/attraction/update", {"attractionId": "attr-123", "attrInfo": {"name": "故宫博物院"}, "baseInfo": {"status": 1}}),
     ]
+
+
+def test_attraction_routes_normalize_snake_case_upstream_payload(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+
+    def attraction_request(method: str, url: str, **kwargs: object) -> UpstreamJsonResponse:
+        if url.endswith("/attraction/batchGet"):
+            return UpstreamJsonResponse({"code": 0, "data": {"items": [
+                {"attraction_id": "ATTR-1", "poi_id": "poi-1", "name": "故宫", "status": 0}
+            ], "total_count": 1}})
+        return UpstreamJsonResponse({"code": 0, "data": {
+            "attraction_id": "ATTR-1", "poi_id": "poi-1",
+            "attr_info": {"name": "故宫", "cityName": "北京"}, "status": 0,
+        }})
+
+    monkeypatch.setattr("requests.request", attraction_request)
+
+    assert client.get("/admin-api/poi/attractions").json()["data"]["items"][0] == {
+        "attractionId": "ATTR-1", "poiId": "poi-1", "name": "故宫", "status": 0,
+    }
+    detail = client.get("/admin-api/poi/attractions/ATTR-1").json()["data"]
+    assert detail["attrInfo"] == {"name": "故宫", "cityName": "北京"}
+    assert detail["baseInfo"] == {"status": 0}
+    assert detail["raw"]["attr_info"]["name"] == "故宫"
 
 
 def add_review_job(client: TestClient) -> str:
