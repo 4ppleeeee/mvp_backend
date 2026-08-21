@@ -16,7 +16,7 @@ from app.config import Settings
 from app.ingestion.classifier import ResourceClassifier
 from app.ingestion.input import extract_first_http_url
 from app.ingestion.service import IngestionService
-from app.models import IngestionJob, SourceEvidence, TravelSource
+from app.models import IngestionJob, PoiCrawlRecord, SourceEvidence, TravelSource
 
 
 _PLATFORM_LABELS = {
@@ -216,8 +216,38 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
         )
 
     @router.post("/poi/crawls", status_code=status.HTTP_202_ACCEPTED)
-    def submit_poi_crawl(payload: dict[str, object]) -> dict[str, object]:
-        return _poi_response(_crawlab_api(settings, "POST", "/poi-crawls", payload=payload))
+    def submit_poi_crawl(request: Request, payload: dict[str, object]) -> dict[str, object]:
+        remote = _crawlab_api(settings, "POST", "/poi-crawls", payload=payload)
+        task = remote.get("data") if isinstance(remote, dict) and isinstance(remote.get("data"), dict) else remote
+        crawl_task_id = str(task.get("crawlTaskId") or "") if isinstance(task, dict) else ""
+        poi_id = str(payload.get("poiId") or "").strip()
+        if not crawl_task_id:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Crawlab API response is missing crawlTaskId")
+        if not poi_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="poiId is required")
+        with Session(request.app.state.engine) as session:
+            record = session.exec(select(PoiCrawlRecord).where(PoiCrawlRecord.crawl_task_id == crawl_task_id)).first()
+            if record is None:
+                poi = payload.get("poi") if isinstance(payload.get("poi"), dict) else {}
+                source_urls = payload.get("sourceUrls") if isinstance(payload.get("sourceUrls"), list) else []
+                record = PoiCrawlRecord(
+                    crawl_task_id=crawl_task_id,
+                    poi_id=poi_id,
+                    poi_key=str(payload.get("poiKey") or f"tencent_map:{poi_id}"),
+                    poi_name=str(poi.get("name") or "未命名地点"),
+                    poi_json=poi,
+                    source_urls=[str(url) for url in source_urls if isinstance(url, str)],
+                    sync_status="queued",
+                )
+                session.add(record)
+                session.commit()
+                session.refresh(record)
+            record_payload = _poi_record_payload(record)
+        schedule = getattr(request.app.state, "schedule_poi_sync", None)
+        if callable(schedule) and record_payload["syncStatus"] in {"queued", "crawling"}:
+            schedule(crawl_task_id)
+        task_payload = task if isinstance(task, dict) else {}
+        return _poi_response({**task_payload, "localSync": record_payload})
 
     @router.get("/poi/crawls")
     def list_poi_crawls(
@@ -238,6 +268,39 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
     @router.get("/poi/crawls/{crawl_task_id}")
     def get_poi_crawl_status(crawl_task_id: str) -> dict[str, object]:
         return _poi_response(_crawlab_api(settings, "GET", f"/poi-crawls/{_task_identifier(crawl_task_id)}"))
+
+    @router.post("/poi/crawls/{crawl_task_id}/sync", status_code=status.HTTP_202_ACCEPTED)
+    def sync_poi_crawl(request: Request, crawl_task_id: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+        crawl_task_id = _task_identifier(crawl_task_id)
+        with Session(request.app.state.engine) as session:
+            record = session.exec(select(PoiCrawlRecord).where(PoiCrawlRecord.crawl_task_id == crawl_task_id)).first()
+            if record is None:
+                payload = payload or {}
+                poi_id = str(payload.get("poiId") or "").strip()
+                if not poi_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="poiId is required to register a historical crawl")
+                poi = payload.get("poi") if isinstance(payload.get("poi"), dict) else {}
+                source_urls = payload.get("sourceUrls") if isinstance(payload.get("sourceUrls"), list) else []
+                record = PoiCrawlRecord(
+                    crawl_task_id=crawl_task_id,
+                    poi_id=poi_id,
+                    poi_key=str(payload.get("poiKey") or f"tencent_map:{poi_id}"),
+                    poi_name=str(poi.get("name") or "未命名地点"),
+                    poi_json=poi,
+                    source_urls=[str(url) for url in source_urls if isinstance(url, str)],
+                    sync_status="queued",
+                )
+                session.add(record)
+                session.commit()
+                session.refresh(record)
+            if record.sync_status in {"created", "creating"}:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="POI crawl cannot be safely rescheduled")
+            record_payload = _poi_record_payload(record)
+        schedule = getattr(request.app.state, "schedule_poi_sync", None)
+        if not callable(schedule):
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="POI crawl scheduling is not available")
+        schedule(crawl_task_id)
+        return _poi_response({"localSync": record_payload})
 
     @router.get("/poi/crawls/{crawl_task_id}/status", include_in_schema=False)
     def poi_crawl_status_alias(crawl_task_id: str) -> dict[str, object]:
@@ -327,6 +390,19 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
 
 def _poi_response(payload: object) -> dict[str, object]:
     return {"ok": True, "data": payload}
+
+
+def _poi_record_payload(record: PoiCrawlRecord) -> dict[str, object]:
+    return {
+        "crawlTaskId": record.crawl_task_id,
+        "poiId": record.poi_id,
+        "poiKey": record.poi_key,
+        "attractionId": record.attraction_id,
+        "syncStatus": record.sync_status,
+        "syncError": record.sync_error,
+        "draft": record.draft_json,
+        "updatedAt": record.updated_at,
+    }
 
 
 def _attraction_list_payload(payload: object) -> dict[str, object]:
