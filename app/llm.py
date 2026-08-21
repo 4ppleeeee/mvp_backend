@@ -60,9 +60,9 @@ class PoiDraftContent(BaseModel):
     local_tip: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
-    @field_validator("tags", "warnings", mode="before")
+    @field_validator("tags", mode="before")
     @classmethod
-    def _coerce_text_lists(cls, value: Any) -> list[str]:
+    def _coerce_tags(cls, value: Any) -> list[str]:
         if value is None:
             return []
         if isinstance(value, str):
@@ -70,6 +70,17 @@ class PoiDraftContent(BaseModel):
             for separator in ["，", "、", ";", "；", "\n"]:
                 normalized = normalized.replace(separator, ",")
             return [item.strip() for item in normalized.split(",") if item.strip()]
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    @field_validator("warnings", mode="before")
+    @classmethod
+    def _coerce_warnings(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value.strip()] if value.strip() else []
         if isinstance(value, list):
             return [str(item).strip() for item in value if str(item).strip()]
         return []

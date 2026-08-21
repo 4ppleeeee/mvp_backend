@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     llm_model: str = "gemma4:latest"
     llm_max_tokens: int = 220
     request_timeout_seconds: float = 240.0
-    crawlab_results_api_url: str = "http://results-api:8091"
+    crawlab_results_api_url: str | None = None
     crawlab_api_token: str | None = None
     tencent_location_api_key: str | None = None
     tencent_location_base_url: str = "https://apis.map.qq.com"
@@ -28,11 +28,6 @@ class Settings(BaseSettings):
     video_grid_columns: int = 2
     admin_api_enabled: bool = False
     admin_allowed_origins: str = ""
-    crawlab_results_api_url: str | None = None
-    crawlab_api_token: str | None = None
-    tencent_location_api_key: str | None = None
-    tencent_location_base_url: str | None = None
-    attraction_api_base_url: str | None = None
 
     @property
     def admin_cors_origins(self) -> list[str]:

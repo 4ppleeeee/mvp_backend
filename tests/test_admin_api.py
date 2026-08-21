@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 
 from app.config import Settings
 from app.main import create_app
-from app.models import IngestionJob, SourceEvidence, TravelSource
+from app.models import IngestionJob, PoiCrawlRecord, SourceEvidence, TravelSource
 
 
 class RecordingExecutor:
@@ -129,6 +129,121 @@ def test_attraction_routes_normalize_snake_case_upstream_payload(tmp_path: Path,
     assert detail["attrInfo"] == {"name": "故宫", "cityName": "北京"}
     assert detail["baseInfo"] == {"status": 0}
     assert detail["raw"]["attr_info"]["name"] == "故宫"
+
+
+def test_poi_submit_persists_returned_crawl_record_and_queues_sync(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    scheduled: list[str] = []
+    client.app.state.schedule_poi_sync = scheduled.append
+
+    def crawlab_request(method: str, url: str, **kwargs: object) -> UpstreamJsonResponse:
+        assert method == "POST"
+        assert url == "https://crawlab.internal/api/v1/poi-crawls"
+        return UpstreamJsonResponse({"crawlTaskId": "crawl-1", "status": "queued"})
+
+    monkeypatch.setattr("requests.request", crawlab_request)
+
+    response = client.post("/admin-api/poi/crawls", json={
+        "poiId": "123",
+        "poiKey": "tencent_map:123",
+        "poi": {"name": "故宫博物院", "city": "北京"},
+        "sourceUrls": ["https://example.test/forbidden-city"],
+    })
+
+    with Session(client.app.state.engine) as session:
+        record = session.exec(select(PoiCrawlRecord).where(PoiCrawlRecord.crawl_task_id == "crawl-1")).one()
+    assert response.status_code == 202
+    assert response.json()["data"]["localSync"]["syncStatus"] == "queued"
+    assert record.poi_name == "故宫博物院"
+    assert scheduled == ["crawl-1"]
+
+
+def test_explicit_poi_sync_rejects_a_created_record(tmp_path: Path) -> None:
+    client = make_poi_client(tmp_path)
+    with Session(client.app.state.engine) as session:
+        session.add(PoiCrawlRecord(
+            crawl_task_id="crawl-created",
+            poi_id="123",
+            poi_key="tencent_map:123",
+            poi_name="故宫博物院",
+            sync_status="created",
+        ))
+        session.commit()
+
+    response = client.post("/admin-api/poi/crawls/crawl-created/sync")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "POI crawl cannot be safely rescheduled"
+
+
+def test_explicit_poi_sync_schedules_a_failed_record(tmp_path: Path) -> None:
+    client = make_poi_client(tmp_path)
+    scheduled: list[str] = []
+    client.app.state.schedule_poi_sync = scheduled.append
+    with Session(client.app.state.engine) as session:
+        session.add(PoiCrawlRecord(
+            crawl_task_id="crawl-failed",
+            poi_id="123",
+            poi_key="tencent_map:123",
+            poi_name="故宫博物院",
+            sync_status="failed",
+            sync_error="Ollama unavailable",
+        ))
+        session.commit()
+
+    response = client.post("/admin-api/poi/crawls/crawl-failed/sync")
+
+    assert response.status_code == 202
+    assert response.json()["data"]["localSync"]["syncStatus"] == "failed"
+    assert scheduled == ["crawl-failed"]
+
+
+def test_explicit_poi_sync_can_register_missing_historical_record(tmp_path: Path) -> None:
+    client = make_poi_client(tmp_path)
+    scheduled: list[str] = []
+    client.app.state.schedule_poi_sync = scheduled.append
+
+    response = client.post("/admin-api/poi/crawls/crawl-history/sync", json={
+        "poiId": "16881613956274024706",
+        "poiKey": "tencent_map:16881613956274024706",
+        "poi": {"name": "历史抓取景点", "city": "北京"},
+        "sourceUrls": ["https://example.test/history"],
+    })
+
+    with Session(client.app.state.engine) as session:
+        record = session.exec(select(PoiCrawlRecord).where(PoiCrawlRecord.crawl_task_id == "crawl-history")).one()
+    assert response.status_code == 202
+    assert record.sync_status == "queued"
+    assert scheduled == ["crawl-history"]
+
+
+def test_poi_crawl_status_includes_persisted_local_sync_state(tmp_path: Path, monkeypatch) -> None:
+    client = make_poi_client(tmp_path)
+    with Session(client.app.state.engine) as session:
+        session.add(PoiCrawlRecord(
+            crawl_task_id="crawl-local",
+            poi_id="123",
+            poi_key="tencent_map:123",
+            poi_name="故宫博物院",
+            attraction_id="attr-123",
+            sync_status="created",
+        ))
+        session.commit()
+    monkeypatch.setattr("requests.request", lambda *args, **kwargs: UpstreamJsonResponse({"crawlTaskId": "crawl-local", "sources": []}))
+
+    response = client.get("/admin-api/poi/crawls/crawl-local")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["localSync"] == {
+        "crawlTaskId": "crawl-local",
+        "poiId": "123",
+        "poiKey": "tencent_map:123",
+        "attractionId": "attr-123",
+        "syncStatus": "created",
+        "syncError": None,
+        "draft": {},
+        "updatedAt": response.json()["data"]["localSync"]["updatedAt"],
+    }
 
 
 def add_review_job(client: TestClient) -> str:
@@ -528,7 +643,9 @@ def test_poi_crawl_submission_preserves_the_upstream_accepted_status(tmp_path: P
     response = client.post("/admin-api/poi/crawls", json={"poi": {"poiId": "poi-123"}, "sourceUrls": ["https://example.com"]})
 
     assert response.status_code == 202
-    assert response.json() == {"ok": True, "data": {"crawlTaskId": "crawl-123"}}
+    assert response.json()["ok"] is True
+    assert response.json()["data"]["crawlTaskId"] == "crawl-123"
+    assert response.json()["data"]["localSync"]["syncStatus"] == "queued"
 
 
 def test_poi_crawl_status_is_available_at_the_canonical_aggregate_route(tmp_path: Path, monkeypatch) -> None:
