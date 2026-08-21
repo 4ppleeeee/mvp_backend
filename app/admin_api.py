@@ -17,6 +17,7 @@ from app.ingestion.classifier import ResourceClassifier
 from app.ingestion.input import extract_first_http_url
 from app.ingestion.service import IngestionService
 from app.models import IngestionJob, PoiCrawlRecord, SourceEvidence, TravelSource
+from app.poi_sync import PoiSyncService
 
 
 _PLATFORM_LABELS = {
@@ -220,15 +221,15 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
         remote = _crawlab_api(settings, "POST", "/poi-crawls", payload=payload)
         task = remote.get("data") if isinstance(remote, dict) and isinstance(remote.get("data"), dict) else remote
         crawl_task_id = str(task.get("crawlTaskId") or "") if isinstance(task, dict) else ""
-        poi_id = str(payload.get("poiId") or "").strip()
         if not crawl_task_id:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Crawlab API response is missing crawlTaskId")
+            return _poi_response(task if isinstance(task, dict) else remote)
+        poi = payload.get("poi") if isinstance(payload.get("poi"), dict) else {}
+        poi_id = str(payload.get("poiId") or poi.get("poiId") or "").strip()
         if not poi_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="poiId is required")
         with Session(request.app.state.engine) as session:
             record = session.exec(select(PoiCrawlRecord).where(PoiCrawlRecord.crawl_task_id == crawl_task_id)).first()
             if record is None:
-                poi = payload.get("poi") if isinstance(payload.get("poi"), dict) else {}
                 source_urls = payload.get("sourceUrls") if isinstance(payload.get("sourceUrls"), list) else []
                 record = PoiCrawlRecord(
                     crawl_task_id=crawl_task_id,
@@ -266,8 +267,16 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
         return _poi_response(_crawlab_api(settings, "GET", "/poi-crawls", params=params))
 
     @router.get("/poi/crawls/{crawl_task_id}")
-    def get_poi_crawl_status(crawl_task_id: str) -> dict[str, object]:
-        return _poi_response(_crawlab_api(settings, "GET", f"/poi-crawls/{_task_identifier(crawl_task_id)}"))
+    def get_poi_crawl_status(request: Request, crawl_task_id: str) -> dict[str, object]:
+        crawl_task_id = _task_identifier(crawl_task_id)
+        remote = _crawlab_api(settings, "GET", f"/poi-crawls/{crawl_task_id}")
+        payload = remote.get("data") if isinstance(remote, dict) and isinstance(remote.get("data"), dict) else remote
+        if not isinstance(payload, dict):
+            return _poi_response(remote)
+        with Session(request.app.state.engine) as session:
+            record = session.exec(select(PoiCrawlRecord).where(PoiCrawlRecord.crawl_task_id == crawl_task_id)).first()
+            local_sync = _poi_record_payload(record) if record else None
+        return _poi_response({**payload, **({"localSync": local_sync} if local_sync else {})})
 
     @router.post("/poi/crawls/{crawl_task_id}/sync", status_code=status.HTTP_202_ACCEPTED)
     def sync_poi_crawl(request: Request, crawl_task_id: str, payload: dict[str, object] | None = None) -> dict[str, object]:
@@ -303,8 +312,8 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
         return _poi_response({"localSync": record_payload})
 
     @router.get("/poi/crawls/{crawl_task_id}/status", include_in_schema=False)
-    def poi_crawl_status_alias(crawl_task_id: str) -> dict[str, object]:
-        return get_poi_crawl_status(crawl_task_id)
+    def poi_crawl_status_alias(request: Request, crawl_task_id: str) -> dict[str, object]:
+        return get_poi_crawl_status(request, crawl_task_id)
 
     @router.get("/poi/tasks/{native_task_id}/pages")
     def read_poi_pages(
@@ -386,6 +395,24 @@ def create_admin_api_router(settings: Settings) -> APIRouter:
         return _poi_response(_attraction_api(settings, "/attraction/update", body))
 
     return router
+
+
+def create_poi_sync_service(*, settings: Settings, engine: object, llm_client: object) -> PoiSyncService:
+    def generate_draft(*, poi: dict[str, object], pages: list[dict[str, object]]) -> object:
+        method = getattr(llm_client, "generate_poi_draft", None)
+        if not callable(method):
+            raise RuntimeError("POI draft generation is unavailable")
+        return method(poi=poi, pages=pages)
+
+    return PoiSyncService(
+        engine=engine,  # type: ignore[arg-type]
+        get_crawl=lambda crawl_task_id: _crawlab_api(settings, "GET", f"/poi-crawls/{_task_identifier(crawl_task_id)}"),
+        get_pages=lambda native_task_id, offset, limit: _crawlab_api(
+            settings, "GET", f"/tasks/{_task_identifier(native_task_id)}/pages", params={"offset": offset, "limit": limit}
+        ),
+        generate_draft=generate_draft,
+        create_attraction=lambda payload: _attraction_api(settings, "/attraction/create", payload),
+    )
 
 
 def _poi_response(payload: object) -> dict[str, object]:

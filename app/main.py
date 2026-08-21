@@ -34,7 +34,7 @@ from app.ingestion.service import IngestionService
 from app.ingestion.sources import SourceRegistry
 from app.ingestion.transcriber import BiliNoteWhisperTranscriber
 from app.ingestion.image_service import ImageIngestionService
-from app.admin_api import create_admin_api_router
+from app.admin_api import create_admin_api_router, create_poi_sync_service
 
 
 def create_app(settings: Settings | None = None, llm_client: object | None = None) -> FastAPI:
@@ -59,6 +59,19 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
     app.state.ingestion_executor = ThreadPoolExecutor(max_workers=1)
     if app_settings.admin_api_enabled:
         app.include_router(create_admin_api_router(app_settings))
+        app.state.poi_sync_executor = ThreadPoolExecutor(max_workers=1)
+        app.state.poi_sync_service = create_poi_sync_service(settings=app_settings, engine=engine, llm_client=client)
+
+        def schedule_poi_sync(crawl_task_id: str) -> None:
+            app.state.poi_sync_executor.submit(app.state.poi_sync_service.run, crawl_task_id)
+
+        def resume_poi_syncs() -> None:
+            for crawl_task_id in app.state.poi_sync_service.pending_crawl_ids():
+                schedule_poi_sync(crawl_task_id)
+
+        app.state.schedule_poi_sync = schedule_poi_sync
+        app.state.resume_poi_syncs = resume_poi_syncs
+        resume_poi_syncs()
 
     def get_session() -> Session:
         with Session(engine) as session:

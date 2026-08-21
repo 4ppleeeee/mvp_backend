@@ -31,18 +31,15 @@ class PoiSyncService:
         record = self._record(crawl_task_id)
         if record.sync_status == "created":
             return "created"
+        if record.sync_status == "creating":
+            return "creating"
         crawl = _mapping(self._get_crawl(crawl_task_id))
         sources = crawl.get("sources") if isinstance(crawl.get("sources"), list) else []
-        source = next((item for item in sources if isinstance(item, dict) and item.get("nativeTaskId")), None)
-        if source is None:
+        readable_pages = self._read_pages(sources)
+        if not readable_pages:
             if str(crawl.get("status") or "").lower() in {"queued", "running", "crawling", "pending"}:
                 self._save_status(crawl_task_id, "crawling", None)
                 return "crawling"
-            self._save_failed(crawl_task_id, "Crawlab did not produce readable pages")
-            return "failed"
-        pages = _mapping(self._get_pages(str(source["nativeTaskId"]), 0, 10)).get("pages")
-        readable_pages = [page for page in pages if isinstance(page, dict) and page.get("markdown")] if isinstance(pages, list) else []
-        if not readable_pages:
             self._save_failed(crawl_task_id, "Crawlab did not produce readable pages")
             return "failed"
         try:
@@ -76,6 +73,23 @@ class PoiSyncService:
                 .order_by(PoiCrawlRecord.created_at)
             ).all()
         return [record.crawl_task_id for record in records]
+
+    def _read_pages(self, sources: list[object]) -> list[dict[str, object]]:
+        pages: list[dict[str, object]] = []
+        for source in sources:
+            native_task_id = source.get("nativeTaskId") if isinstance(source, dict) else None
+            if not isinstance(native_task_id, str) or not native_task_id:
+                continue
+            offset = 0
+            while True:
+                batch = _mapping(self._get_pages(native_task_id, offset, 10)).get("pages")
+                if not isinstance(batch, list):
+                    break
+                pages.extend(page for page in batch if isinstance(page, dict) and page.get("markdown"))
+                if len(batch) < 10:
+                    break
+                offset += len(batch)
+        return pages
 
     def _save_failed(self, crawl_task_id: str, error: str) -> None:
         self._save_status(crawl_task_id, "failed", error)

@@ -5,6 +5,7 @@ from sqlmodel import Session, select
 from app.config import Settings
 from app.db import create_db_engine, init_db
 from app.llm import PoiDraftContent
+from app.main import create_app
 from app.models import PoiCrawlRecord
 from app.poi_sync import PoiSyncService
 
@@ -157,13 +158,18 @@ def test_sync_keeps_running_crawl_pending_when_no_native_result_exists(tmp_path:
 def test_sync_does_not_retry_when_create_result_is_unknown(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     add_record(engine, crawl_task_id="crawl-unknown")
+    create_calls: list[object] = []
+
+    def unknown_create(payload: dict[str, object]) -> object:
+        create_calls.append(payload)
+        raise TimeoutError("upstream timed out")
 
     sync = PoiSyncService(
         engine=engine,
         get_crawl=lambda _: {"sources": [{"nativeTaskId": "native-ok", "status": "succeeded"}]},
         get_pages=lambda _, offset, limit: {"pages": [{"markdown": "已抓到资料"}]},
         generate_draft=lambda **_: PoiDraftContent(description="初稿"),
-        create_attraction=lambda _: (_ for _ in ()).throw(TimeoutError("upstream timed out")),
+        create_attraction=unknown_create,
     )
 
     assert sync.run("crawl-unknown") == "creating"
@@ -171,6 +177,7 @@ def test_sync_does_not_retry_when_create_result_is_unknown(tmp_path: Path) -> No
     assert saved.sync_status == "creating"
     assert "unknown" in (saved.sync_error or "").lower()
     assert sync.run("crawl-unknown") == "creating"
+    assert len(create_calls) == 1
 
 
 def test_sync_persists_a_generation_failure_without_creating_attraction(tmp_path: Path) -> None:
@@ -190,3 +197,78 @@ def test_sync_persists_a_generation_failure_without_creating_attraction(tmp_path
     assert saved.sync_status == "failed"
     assert saved.sync_error == "Ollama unavailable"
     assert creates == []
+
+
+def test_sync_uses_readable_pages_from_every_native_source(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    add_record(engine, crawl_task_id="crawl-multiple")
+    loaded: list[dict[str, object]] = []
+
+    async def generate_draft(*, poi: dict[str, object], pages: list[dict[str, object]]) -> PoiDraftContent:
+        loaded.extend(pages)
+        return PoiDraftContent(description="综合两份资料")
+
+    sync = PoiSyncService(
+        engine=engine,
+        get_crawl=lambda _: {"status": "succeeded", "sources": [
+            {"nativeTaskId": "native-a", "status": "failed"},
+            {"nativeTaskId": "native-b", "status": "succeeded"},
+        ]},
+        get_pages=lambda native_task_id, offset, limit: {"pages": [{"markdown": f"{native_task_id} 的资料"}]},
+        generate_draft=generate_draft,
+        create_attraction=lambda _: {"attractionId": "attr-multiple"},
+    )
+
+    assert sync.run("crawl-multiple") == "created"
+    assert [page["markdown"] for page in loaded] == ["native-a 的资料", "native-b 的资料"]
+
+
+def test_sync_reads_all_result_pages_in_batches_of_ten(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    add_record(engine, crawl_task_id="crawl-paged")
+    loaded: list[dict[str, object]] = []
+
+    async def generate_draft(*, poi: dict[str, object], pages: list[dict[str, object]]) -> PoiDraftContent:
+        loaded.extend(pages)
+        return PoiDraftContent()
+
+    def get_pages(native_task_id: str, offset: int, limit: int) -> dict[str, object]:
+        assert native_task_id == "native-paged"
+        assert limit == 10
+        return {"pages": [{"markdown": f"第 {index} 页"} for index in range(offset, 10 if offset == 0 else 11)]}
+
+    sync = PoiSyncService(
+        engine=engine,
+        get_crawl=lambda _: {"sources": [{"nativeTaskId": "native-paged"}]},
+        get_pages=get_pages,
+        generate_draft=generate_draft,
+        create_attraction=lambda _: {"attractionId": "attr-paged"},
+    )
+
+    assert sync.run("crawl-paged") == "created"
+    assert len(loaded) == 11
+
+
+def test_app_resumes_only_queued_and_crawling_poi_records(tmp_path: Path) -> None:
+    app = create_app(Settings(
+        database_url=f"sqlite:///{tmp_path / 'lifecycle.db'}",
+        uploads_dir=str(tmp_path / "uploads"),
+        ingestion_temp_dir=str(tmp_path / "ingestion"),
+        admin_api_enabled=True,
+        crawlab_results_api_url="https://crawlab.internal",
+        crawlab_api_token="crawlab-test-token",
+        attraction_api_base_url="https://attraction.internal",
+    ))
+    add_record(app.state.engine, crawl_task_id="crawl-queued", sync_status="queued")
+    add_record(app.state.engine, crawl_task_id="crawl-crawling", sync_status="crawling")
+    add_record(app.state.engine, crawl_task_id="crawl-creating", sync_status="creating")
+    calls: list[tuple[object, tuple[object, ...]]] = []
+
+    class RecordingExecutor:
+        def submit(self, function: object, *args: object) -> None:
+            calls.append((function, args))
+
+    app.state.poi_sync_executor = RecordingExecutor()
+    app.state.resume_poi_syncs()
+
+    assert [args for _, args in calls] == [("crawl-queued",), ("crawl-crawling",)]
