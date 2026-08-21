@@ -54,10 +54,14 @@ class PoiSyncService:
         except Exception as exc:
             self._save_status(crawl_task_id, "creating", f"Attraction create outcome is unknown: {exc}")
             return "creating"
+        attraction_id = _attraction_id(created)
+        if attraction_id is None:
+            self._save_status(crawl_task_id, "creating", "Attraction create response did not include an attraction ID")
+            return "creating"
         with Session(self._engine) as session:
             current = session.exec(select(PoiCrawlRecord).where(PoiCrawlRecord.crawl_task_id == crawl_task_id)).one()
             current.sync_status = "created"
-            current.attraction_id = str(created["attractionId"])
+            current.attraction_id = attraction_id
             current.draft_json = draft
             current.sync_error = None
             current.updated_at = datetime.now(timezone.utc)
@@ -131,6 +135,14 @@ def _mapping(value: object) -> dict[str, object]:
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")
     return value if isinstance(value, dict) else {}
+
+
+def _attraction_id(payload: dict[str, object]) -> str | None:
+    for key in ("attractionId", "attraction_id", "id"):
+        value = payload.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    return None
 
 
 def _resolve(value: object) -> object:

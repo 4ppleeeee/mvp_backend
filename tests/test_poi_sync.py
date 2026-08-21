@@ -78,6 +78,21 @@ def test_sync_creates_attraction_from_readable_completed_pages(tmp_path: Path) -
     }]
 
 
+def test_sync_persists_snake_case_attraction_id_from_upstream(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    add_record(engine, crawl_task_id="crawl-snake")
+    sync = PoiSyncService(
+        engine=engine,
+        get_crawl=lambda _: {"sources": [{"nativeTaskId": "native-ok", "status": "succeeded"}]},
+        get_pages=lambda _, offset, limit: {"pages": [{"markdown": "已抓到资料"}]},
+        generate_draft=lambda **_: PoiDraftContent(),
+        create_attraction=lambda _: {"attraction_id": "attr-snake"},
+    )
+
+    assert sync.run("crawl-snake") == "created"
+    assert get_record(engine, "crawl-snake").attraction_id == "attr-snake"
+
+
 def test_sync_marks_zero_page_crawl_failed_without_creating_attraction(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     add_record(engine, crawl_task_id="crawl-empty")
