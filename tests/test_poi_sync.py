@@ -170,6 +170,23 @@ def test_sync_keeps_running_crawl_pending_when_no_native_result_exists(tmp_path:
     assert get_record(engine, "crawl-running").sync_status == "crawling"
 
 
+def test_sync_keeps_a_crawlab_read_failure_pending_for_the_next_rescan(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    add_record(engine, crawl_task_id="crawl-unavailable")
+    sync = PoiSyncService(
+        engine=engine,
+        get_crawl=lambda _: (_ for _ in ()).throw(RuntimeError("Crawlab API request failed")),
+        get_pages=lambda _, offset, limit: (_ for _ in ()).throw(AssertionError("pages must not be read")),
+        generate_draft=lambda **_: (_ for _ in ()).throw(AssertionError("LLM must not be called")),
+        create_attraction=lambda _: (_ for _ in ()).throw(AssertionError("create must not be called")),
+    )
+
+    assert sync.run("crawl-unavailable") == "crawling"
+    saved = get_record(engine, "crawl-unavailable")
+    assert saved.sync_status == "crawling"
+    assert saved.sync_error == "Crawlab result check failed: Crawlab API request failed"
+
+
 def test_sync_does_not_retry_when_create_result_is_unknown(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     add_record(engine, crawl_task_id="crawl-unknown")
@@ -287,3 +304,28 @@ def test_app_resumes_only_queued_and_crawling_poi_records(tmp_path: Path) -> Non
     app.state.resume_poi_syncs()
 
     assert [args for _, args in calls] == [("crawl-queued",), ("crawl-crawling",)]
+
+
+def test_app_rescans_pending_poi_records_after_the_initial_submission(tmp_path: Path) -> None:
+    app = create_app(Settings(
+        database_url=f"sqlite:///{tmp_path / 'rescan.db'}",
+        uploads_dir=str(tmp_path / "uploads"),
+        ingestion_temp_dir=str(tmp_path / "ingestion"),
+        admin_api_enabled=True,
+        crawlab_results_api_url="https://crawlab.internal",
+        crawlab_api_token="crawlab-test-token",
+        attraction_api_base_url="https://attraction.internal",
+    ))
+    add_record(app.state.engine, crawl_task_id="crawl-queued", sync_status="queued")
+    add_record(app.state.engine, crawl_task_id="crawl-created", sync_status="created")
+    calls: list[tuple[object, tuple[object, ...]]] = []
+
+    class RecordingExecutor:
+        def submit(self, function: object, *args: object) -> None:
+            calls.append((function, args))
+
+    app.state.poi_sync_executor = RecordingExecutor()
+
+    app.state.rescan_poi_syncs()
+
+    assert [args for _, args in calls] == [("crawl-queued",)]

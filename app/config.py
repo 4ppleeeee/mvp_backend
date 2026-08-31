@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +29,7 @@ class Settings(BaseSettings):
     video_grid_columns: int = 2
     admin_api_enabled: bool = False
     admin_allowed_origins: str = ""
+    poi_sync_poll_interval_seconds: float = Field(default=15.0, ge=1.0)
 
     @property
     def admin_cors_origins(self) -> list[str]:

@@ -33,9 +33,13 @@ class PoiSyncService:
             return "created"
         if record.sync_status == "creating":
             return "creating"
-        crawl = _mapping(self._get_crawl(crawl_task_id))
-        sources = crawl.get("sources") if isinstance(crawl.get("sources"), list) else []
-        readable_pages = self._read_pages(sources)
+        try:
+            crawl = _mapping(self._get_crawl(crawl_task_id))
+            sources = crawl.get("sources") if isinstance(crawl.get("sources"), list) else []
+            readable_pages = self._read_pages(sources)
+        except Exception as exc:
+            self._save_status(crawl_task_id, "crawling", f"Crawlab result check failed: {str(exc) or exc.__class__.__name__}")
+            return "crawling"
         if not readable_pages:
             if str(crawl.get("status") or "").lower() in {"queued", "running", "crawling", "pending"}:
                 self._save_status(crawl_task_id, "crawling", None)

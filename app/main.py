@@ -1,5 +1,6 @@
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock, Thread
 
 from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,17 +62,54 @@ def create_app(settings: Settings | None = None, llm_client: object | None = Non
         app.include_router(create_admin_api_router(app_settings))
         app.state.poi_sync_executor = ThreadPoolExecutor(max_workers=1)
         app.state.poi_sync_service = create_poi_sync_service(settings=app_settings, engine=engine, llm_client=client)
+        poi_sync_inflight: set[str] = set()
+        poi_sync_lock = Lock()
 
         def schedule_poi_sync(crawl_task_id: str) -> None:
-            app.state.poi_sync_executor.submit(app.state.poi_sync_service.run, crawl_task_id)
+            with poi_sync_lock:
+                if crawl_task_id in poi_sync_inflight:
+                    return
+                poi_sync_inflight.add(crawl_task_id)
+            future = app.state.poi_sync_executor.submit(app.state.poi_sync_service.run, crawl_task_id)
 
-        def resume_poi_syncs() -> None:
+            def release(_: object) -> None:
+                with poi_sync_lock:
+                    poi_sync_inflight.discard(crawl_task_id)
+
+            callback = getattr(future, "add_done_callback", None)
+            if callable(callback):
+                callback(release)
+
+        def rescan_poi_syncs() -> None:
             for crawl_task_id in app.state.poi_sync_service.pending_crawl_ids():
                 schedule_poi_sync(crawl_task_id)
 
         app.state.schedule_poi_sync = schedule_poi_sync
-        app.state.resume_poi_syncs = resume_poi_syncs
-        resume_poi_syncs()
+        app.state.rescan_poi_syncs = rescan_poi_syncs
+        app.state.resume_poi_syncs = rescan_poi_syncs
+        poi_sync_stop = Event()
+        app.state.poi_sync_stop = poi_sync_stop
+        app.state.poi_sync_poll_thread = None
+
+        def poll_poi_syncs() -> None:
+            while not poi_sync_stop.wait(app_settings.poi_sync_poll_interval_seconds):
+                rescan_poi_syncs()
+
+        @app.on_event("startup")
+        def start_poi_sync_polling() -> None:
+            rescan_poi_syncs()
+            thread = app.state.poi_sync_poll_thread
+            if thread is None or not thread.is_alive():
+                app.state.poi_sync_poll_thread = Thread(target=poll_poi_syncs, name="poi-sync-poll", daemon=True)
+                app.state.poi_sync_poll_thread.start()
+
+        @app.on_event("shutdown")
+        def stop_poi_sync_polling() -> None:
+            poi_sync_stop.set()
+            thread = app.state.poi_sync_poll_thread
+            if thread is not None:
+                thread.join(timeout=app_settings.poi_sync_poll_interval_seconds + 1)
+            app.state.poi_sync_executor.shutdown(wait=False, cancel_futures=True)
 
     def get_session() -> Session:
         with Session(engine) as session:
